@@ -55,6 +55,26 @@ and runs the timestep loop, including Vis and restart/checkpoint dumps. It conta
 #include "TreeVector.hh"
 #include "PK_Factory.hh"
 
+// registration files
+#include "state_evaluators_registration.hh"
+
+#include "ats_relations_registration.hh"
+#include "ats_transport_registration.hh"
+#include "ats_energy_pks_registration.hh"
+#include "ats_energy_relations_registration.hh"
+#include "ats_flow_pks_registration.hh"
+#include "ats_flow_relations_registration.hh"
+#include "ats_deformation_registration.hh"
+#include "ats_bgc_registration.hh"
+#include "ats_surface_balance_registration.hh"
+#include "ats_mpc_registration.hh"
+#include "ats_sediment_transport_registration.hh"
+#include "mdm_transport_registration.hh"
+#include "multiscale_transport_registration.hh"
+#ifdef ALQUIMIA_ENABLED
+#include "pks_chemistry_registration.hh"
+#endif
+
 #define DEBUG_MODE 1
 
 
@@ -82,8 +102,8 @@ ats_elm_drv::~ats_elm_drv() {
 
 };
 
-int ats_elm_drv::drv_init(std::string input_filename,
-		const Teuchos::RCP<const Amanzi::Comm_type>& comm) {
+int ats_elm_drv::drv_init(std::string input_filename) {
+		//const Teuchos::RCP<const Amanzi::Comm_type>& comm) {
 
   // STEP 1: configuring MPI, mesh (domain), states, ... from input file passing by ELM
   // -- create/set communicator (TODO)
@@ -107,12 +127,12 @@ int ats_elm_drv::drv_init(std::string input_filename,
   // geometric model and regions
   Teuchos::ParameterList reg_params = plist.sublist("regions");
   Teuchos::RCP<Amanzi::AmanziGeometry::GeometricModel> gm =
-    Teuchos::rcp(new Amanzi::AmanziGeometry::GeometricModel(3, reg_params, *comm) );
+    Teuchos::rcp(new Amanzi::AmanziGeometry::GeometricModel(3, reg_params, *comm_) );
   // state
   Teuchos::ParameterList state_plist = plist.sublist("state");
   S_ = Teuchos::rcp(new Amanzi::State(state_plist));
   // create and register meshes
-  ATS::Mesh::createMeshes(plist, comm, gm, *S_);
+  ATS::Mesh::createMeshes(plist, comm_, gm, *S_);
 
   // 'cycle driver' or 'coordinator' parameter-list
   ats_elm_drv_list_ = Teuchos::sublist(parameter_list_, "cycle driver");

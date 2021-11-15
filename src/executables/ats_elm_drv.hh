@@ -131,8 +131,8 @@ public:
   ~ats_elm_drv();
 
   // primary functions
-  int drv_init(std::string input_filename,  // input .xml file passing from ELM
-		  const Teuchos::RCP<const Amanzi::Comm_type>& comm); // communicator passing from ELM
+  int drv_init(std::string input_filename); //,  // input .xml file passing from ELM
+		  //const Teuchos::RCP<const Amanzi::Comm_type>& comm); // communicator passing from ELM
   void cycle_driver();
 
 private:
@@ -158,6 +158,7 @@ private:
   Teuchos::RCP<Amanzi::State> S_;
   Teuchos::RCP<Amanzi::State> S_inter_;
   Teuchos::RCP<Amanzi::State> S_next_;
+
   Teuchos::RCP<Amanzi::TreeVector> soln_;
 
   // time step manager

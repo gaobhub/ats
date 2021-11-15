@@ -35,13 +35,33 @@ and runs the timestep loop, including Vis and restart/checkpoint dumps. It conta
 #include "ats_elm_interface.hh"
 
 // input file read from ELM calling
-int ats_elm_input(std::string input_filename) {
-    //TODO
-	return 0;
-}
+int ats_elm_init(const char* c_input_file, const int comm) {
 
-void ats_elm_setmpicomm(const int comm){
-	//TODO
+  std::cout << "INFO: inputfile from ELM " << std:: endl
+		    << c_input_file << std::endl;
+
+  // TODO comm
+  int rank = 0;
+
+  //initializing ats_elm_driver
+  int iret = 0;
+  try {
+	std::string input_filename(c_input_file);  // converting from c_char* to std:string
+	iret = ats_elm.drv_init(input_filename);
+  } catch (std::string& s) {
+	if (rank == 0) {
+      std::cerr << "ERROR:" << std::endl
+                << s << std::endl;
+    }
+    return 1;
+  } catch (int& ierr) {
+	if (rank == 0) {
+      std::cerr << "ERROR: unknown error code " << ierr << std::endl;
+	}
+	return ierr;
+  }
+
+  return iret;
 }
 
 // initial conditions

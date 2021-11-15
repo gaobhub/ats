@@ -41,16 +41,13 @@
 
 #include "ats_elm_drv.hh"
 
-ATS::ats_elm_drv ats_elm();
+ATS::ats_elm_drv ats_elm;
 
 #ifdef __cplusplus
 extern "C" {
 #endif /* __cplusplus */
-
-//int ats_elm_init(std::string input_filename,  // input .xml file passing from ELM
-//		  const Teuchos::RCP<const Amanzi::Comm_type>& comm); // communicator passing from ELM
-int ats_elm_input(std::string input_filenam); // input .xml file passing from ELM
-void ats_elm_setmpicomm(const int comm);   //TODO - comm is a fake type now
+// input .xml file passing from ELM as c_char array
+int ats_elm_init(const char* input_filename, const int comm); // input .xml file passing from ELM
 void ats_elm_setIC();      // initial conditions
 void ats_elm_setBC();      // boundary conditions
 void ats_elm_setSS();      // source/sink terms
