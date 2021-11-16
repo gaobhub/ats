@@ -1,11 +1,11 @@
 /* -*-  mode: c++; indent-tabs-mode: nil -*- */
 /* -------------------------------------------------------------------------
-ATS interface for ELM
+ATS driver class for ATS-ELM interface
 
 License: see $ATS_DIR/COPYRIGHT
 Authors: Ethan Coon, F.-M. Yuan @ ORNL
 
-Implementation for the ats_elm_interface.  The interface is a class to:
+Implementation (driver) for the ats_elm_interface.  The interface driver is a class to:
 (1) read-in inputs by filename passing from ELM, and communicator synchorizing;
 (2) pass data from ELM to ATS;
 (3) in ONE single ELM-timestep, run cycle driver, which runs the overall, top level timestep loop.
@@ -13,6 +13,10 @@ As in 'coordinator.cc', this portion of codes instantiates states, ensures they 
 and runs the timestep loop, including Vis and restart/checkpoint dumps. It contains one and only one PK
 -- most likely this PK is an MPC of some type -- to do the actual work.
 (4) return data to ELM.
+
+NOTE: Since ELM ususually runs at half-hourly timestep for hundred/thousand years,
+      it's a must to turn off all screen/std print-out to avoid large amounts of ascii log file.
+      Therefore, set global verbosity level to NONE by default.
 ------------------------------------------------------------------------- */
 
 #include <iostream>
@@ -29,9 +33,7 @@ and runs the timestep loop, including Vis and restart/checkpoint dumps. It conta
 
 #include "Teuchos_ParameterList.hpp"
 #include "Teuchos_ParameterXMLFileReader.hpp"
-#include "Teuchos_VerboseObjectParameterListHelpers.hpp"
 #include "Teuchos_XMLParameterListHelpers.hpp"
-#include "Teuchos_TimeMonitor.hpp"
 
 //
 #include "AmanziComm.hh"
@@ -92,8 +94,6 @@ ats_elm_drv::ats_elm_drv() {
 
   // create and start the global timer
   timer_ = Teuchos::rcp(new Teuchos::Time("wallclock_monitor",true));
-  setup_timer_ = Teuchos::TimeMonitor::getNewCounter("setup");
-  cycle_timer_ = Teuchos::TimeMonitor::getNewCounter("cycle");
 
 };
 
@@ -108,12 +108,12 @@ int ats_elm_drv::drv_init(std::string input_filename) {
   // STEP 1: configuring MPI, mesh (domain), states, ... from input file passing by ELM
   // -- create/set communicator (TODO)
   comm_ = Amanzi::getDefaultComm();  // TODO: should be sync. with 'comm'
-  int size = comm_->NumProc();
-  int rank = comm_->MyPID();
+  comm_size = comm_->NumProc();
+  comm_rank = comm_->MyPID();
 
   // have to read-in parameter list by filename from ELM
   if (!boost::filesystem::exists(input_filename)) {
-    if (rank == 0) {
+    if (comm_rank == 0) {
 	   std::cerr << "ERROR: input file \"" << input_filename << "\" does not exist." << std::endl;
 	}
 	return 1;
@@ -121,6 +121,9 @@ int ats_elm_drv::drv_init(std::string input_filename) {
 
   // parse input file
   parameter_list_ = Teuchos::getParametersFromXmlFile(input_filename);
+
+  // -- set default verbosity level to NONE
+  Amanzi::VerboseObject::global_default_level = Teuchos::VERB_NONE;
 
   // create meshes, regions, state from input .xml as data holders
   Teuchos::ParameterList& plist = *parameter_list_;
@@ -198,6 +201,9 @@ int ats_elm_drv::drv_init(std::string input_filename) {
   // create the time step manager
   tsm_ = Teuchos::rcp(new Amanzi::TimeStepManager());
 
+  // verbose object (NOTE: already set option level to NONE)
+  vo_ = Teuchos::rcp(new Amanzi::VerboseObject("ats_elm_driver", *parameter_list_));
+
   return 0;
 
 }
@@ -245,7 +251,7 @@ void ats_elm_drv::cycle_driver() {
   // start at time t = t0 and initialize the state.
   double dt_restart = -1;
   {
-    Teuchos::TimeMonitor monitor(*setup_timer_);
+    //Teuchos::TimeMonitor monitor(*setup_timer_);
     setup();
     dt_restart = initialize();
   }
@@ -254,31 +260,18 @@ void ats_elm_drv::cycle_driver() {
   double dt = dt_restart > 0 ? dt_restart : get_dt(false);
 
   // visualization at IC
-  visualize();
+  visualize(false);
   checkpoint(dt);
 
   // iterate process kernels
   {
-    Teuchos::TimeMonitor cycle_monitor(*cycle_timer_);
-#if !DEBUG_MODE
-  try {
-#endif
+    //Teuchos::TimeMonitor cycle_monitor(*cycle_timer_);
+
     bool fail = false;
     while ((S_->time() < t1_) &&
            ((cycle1_ == -1) || (S_->cycle() <= cycle1_)) &&
            (duration_ < 0 || timer_->totalElapsedTime(true) < duration) &&
            dt > 0.) {
-      if (vo_->os_OK(Teuchos::VERB_LOW)) {
-        Teuchos::OSTab tab = vo_->getOSTab();
-        *vo_->os() << "======================================================================"
-                  << std::endl << std::endl;
-        *vo_->os() << "Cycle = " << S_->cycle();
-        *vo_->os() << ",  Time [days] = "<< std::setprecision(16) << S_->time() / (60*60*24);
-        *vo_->os() << ",  dt [days] = " << std::setprecision(16) << dt / (60*60*24)  << std::endl;
-        *vo_->os() << "----------------------------------------------------------------------"
-                  << std::endl;
-      }
-
       *S_->GetScalarData("dt", "ats_elm_drv") = dt;
       *S_inter_->GetScalarData("dt", "ats_elm_drv") = dt;
       *S_next_->GetScalarData("dt", "ats_elm_drv") = dt;
@@ -290,32 +283,14 @@ void ats_elm_drv::cycle_driver() {
       fail = advance(S_->time(), S_->time() + dt, dt);
     } // while not finished
 
-#if !DEBUG_MODE
-  } catch (Amanzi::Exceptions::Amanzi_exception &e) {
-    // write one more vis for help debugging
-    S_next_->advance_cycle();
-    visualize(true); // force vis
-
-    // flush observations to make sure they are saved
-    for (const auto& obs : observations_) obs->Flush();
-
-    // catch errors to dump two checkpoints -- one as a "last good" checkpoint
-    // and one as a "debugging data" checkpoint.
-    checkpoint_->set_filebasename("last_good_checkpoint");
-    WriteCheckpoint(checkpoint_.ptr(), *S_, dt);
-    checkpoint_->set_filebasename("error_checkpoint");
-    WriteCheckpoint(checkpoint_.ptr(), *S_next_, dt);
-    throw e;
-  }
-#endif
   }
 
   // finalizing simulation
   WriteStateStatistics(*S_, *vo_);
-  Teuchos::TimeMonitor::summarize(*vo_->os());
+  //Teuchos::TimeMonitor::summarize(*vo_->os());
 
   finalize();
-} // ats_elm_onestep
+} // cycle_driver
 
 void ats_elm_drv::setup() {
   // Set up the states, creating all data structures.

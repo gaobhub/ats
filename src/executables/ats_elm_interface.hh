@@ -1,14 +1,13 @@
 /* -*-  mode: c++; indent-tabs-mode: nil -*- */
 
-/* Simulation controller and top-level driver For ONE E3SM Land Model (ELM) Timestep
+/* extern "C" interface of ATS-ELM coupling
 
- The interface imitates ats 'main.cc', 'simulation_driver.cc', 'coordinator.cc' very much, WITHOUT heavy print-out info
- So the spec. are exactly same.
+   (1) Its fortran-code interface is named as 'ELM_ATS_InterfaceMod.F90'.
 
- The building system will compile and link into a package of dynamic libraries,
- with libats_elm_interface.dylib as hooking class to ELM's EMI-EM_ATS interface.
+   (2) The building system will compile and link into a package of dynamic libraries,
+       with libats_elm_interface.dylib as hooking portal, including this interface and 'ats_elm_drv' class.
 
- ALL inputs, inc. *.xml, required by ATS would be in E3SM's input data directory under 'lnd/clm2/ats'
+   (3) ALL inputs, inc. *.xml, required by ATS would be in E3SM's input data directory under 'lnd/clm2/ats'
 
  Authors: F.-M. Yuan (yuanf@ornl.gov), Ethan Coon (coonet@ornl.gov)
 */
@@ -25,7 +24,7 @@
 
 */
 /*
- ELM-EMI calling subroutines include (NOT YET finalized):
+ ELM-EMI/em-ats calling subroutines include (NOT YET finalized):
   subroutine EM_ATS_Init(this, l2e_init_list, e2l_init_list, iam, bounds_clump)
   subroutine set_material_properties(this, l2e_init_list, bounds_clump)
   subroutine set_initial_conditions(this, l2e_init_list, bounds_clump)
@@ -51,7 +50,7 @@ int ats_elm_init(const char* input_filename, const int comm); // input .xml file
 void ats_elm_setIC();      // initial conditions
 void ats_elm_setBC();      // boundary conditions
 void ats_elm_setSS();      // source/sink terms
-void ats_elm_onestep();    // advance one ELM-timestep
+void ats_elm_onestep(const double start_time, const double end_time);    // advance one ELM-timestep
 void ats_elm_getdata();    // extract data and return to ELM
 
 

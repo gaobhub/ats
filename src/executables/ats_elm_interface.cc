@@ -1,18 +1,15 @@
 /* -*-  mode: c++; indent-tabs-mode: nil -*- */
 /* -------------------------------------------------------------------------
-ATS interface for ELM
+ATS-ELM interface, direct portal to ELM-ATS fortran interface.
 
 License: see $ATS_DIR/COPYRIGHT
 Authors: Ethan Coon, F.-M. Yuan @ ORNL
 
-Implementation for the ats_elm_interface.  The interface is a class to:
-(1) read-in inputs by filename passing from ELM, and communicator synchorizing;
-(2) pass data from ELM to ATS;
-(3) in ONE single ELM-timestep, run cycle driver, which runs the overall, top level timestep loop.
-As in 'coordinator.cc', this portion of codes instantiates states, ensures they are initialized,
-and runs the timestep loop, including Vis and restart/checkpoint dumps. It contains one and only one PK
--- most likely this PK is an MPC of some type -- to do the actual work.
-(4) return data to ELM.
+The interface is a series of extern "C" functions of c-interface,
+which are directly called by ELM-ATS fortran interface in ELM-emi/em-ats subroutines.
+
+NOTE: this interface appears not be in a class, otherwise hard to be called by fortran interface.
+      (not sure why currently)
 ------------------------------------------------------------------------- */
 
 #include <iostream>
@@ -41,7 +38,7 @@ int ats_elm_init(const char* c_input_file, const int comm) {
 		    << c_input_file << std::endl;
 
   // TODO comm
-  int rank = 0;
+  int rank = ats_elm.comm_rank;
 
   //initializing ats_elm_driver
   int iret = 0;
@@ -80,8 +77,35 @@ void ats_elm_setSS(){
 }
 
 // run one timestep
-void ats_elm_onestep(){
-	//TODO
+void ats_elm_onestep(const double start_ts, const double end_ts){
+  //TODO
+  // TODO comm
+  int rank = ats_elm.comm_rank;
+
+  if (rank == 0) {
+    std::cout << std::endl;
+    std::cout << "INFO: cycle-driver activiated from ELM for time period of " << std:: endl
+			<< start_ts << " -- " << end_ts << " seconds" << std::endl;
+  }
+
+  //
+  try {
+    ats_elm.cycle_driver();
+	if (rank == 0) {
+      std::cout << "INFO: ATS runs sucessfully! " << std::endl;
+      std::cout << std::endl;
+    }
+
+  } catch (std::string& s) {
+	if (rank == 0) {
+      std::cerr << "ERROR:" << std::endl
+                << s << std::endl;
+    }
+  } catch (int& ierr) {
+	if (rank == 0) {
+      std::cerr << "ERROR: unknown error code " << ierr << std::endl;
+	}
+  }
 }
 
 // return data to ELM's ATS interface

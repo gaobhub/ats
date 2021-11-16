@@ -130,6 +130,10 @@ public:
   ats_elm_drv();
   ~ats_elm_drv();
 
+  // some variables in common
+  int comm_size;
+  int comm_rank;
+
   // primary functions
   int drv_init(std::string input_filename); //,  // input .xml file passing from ELM
 		  //const Teuchos::RCP<const Amanzi::Comm_type>& comm); // communicator passing from ELM
@@ -143,7 +147,6 @@ private:
   void setup();
   double initialize();
   void finalize();
-  void report_memory();
   bool advance(double t_old, double t_new, double& dt_next);
   void visualize(bool force=false);
   void checkpoint(double dt, bool force=false);
@@ -186,8 +189,6 @@ private:
   std::vector<Teuchos::RCP<Amanzi::UnstructuredObservations>> observations_;
 
   // timers
-  Teuchos::RCP<Teuchos::Time> setup_timer_;
-  Teuchos::RCP<Teuchos::Time> cycle_timer_;
   Teuchos::RCP<Teuchos::Time> timer_;
   double duration_;
   bool subcycled_ts_;
