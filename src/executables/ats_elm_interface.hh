@@ -46,11 +46,12 @@ ATS::ats_elm_drv ats_elm;
 extern "C" {
 #endif /* __cplusplus */
 // input .xml file passing from ELM as c_char array
-int ats_elm_init(const char* input_filename, const int comm); // input .xml file passing from ELM
+int ats_elm_init(const char* input_filename, const int comm, const double start_time); // input .xml file passing from ELM
 void ats_elm_setIC();      // initial conditions
 void ats_elm_setBC();      // boundary conditions
 void ats_elm_setSS();      // source/sink terms
-void ats_elm_onestep(const double start_time, const double end_time);    // advance one ELM-timestep
+void ats_elm_onestep(const double start_time, const double end_time, // advance one ELM-timestep
+		const int resetIC_from_elm=0);                               // 0 or 1 pass from ELM
 void ats_elm_getdata();    // extract data and return to ELM
 
 

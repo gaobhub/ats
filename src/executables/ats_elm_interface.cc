@@ -32,15 +32,17 @@ NOTE: this interface appears not be in a class, otherwise hard to be called by f
 #include "ats_elm_interface.hh"
 
 // input file read from ELM calling
-int ats_elm_init(const char* c_input_file, const int comm) {
-
-  std::cout << "INFO: inputfile from ELM " << std:: endl
-		    << c_input_file << std::endl;
+int ats_elm_init(const char* c_input_file, const int comm, const double start_ts) {
 
   // TODO comm
   int rank = ats_elm.comm_rank;
 
-  //initializing ats_elm_driver
+  if (rank == 0) {
+    std::cout << "INFO: inputfile from ELM " << std:: endl
+		    << c_input_file << std::endl;
+  }
+
+  //initializing ats_elm_driver (1) input file and communicator (TODO)
   int iret = 0;
   try {
 	std::string input_filename(c_input_file);  // converting from c_char* to std:string
@@ -57,6 +59,16 @@ int ats_elm_init(const char* c_input_file, const int comm) {
 	}
 	return ierr;
   }
+
+  // setup ats and initialize fully
+  try {
+	iret = ats_elm.drv_setup(start_ts, true);
+  }catch (int& ierr) {
+	if (rank == 0) {
+    std::cerr << "ERROR in ats_elm driver setup and initialization with error code: " << ierr << std::endl;
+	}
+	return ierr;
+}
 
   return iret;
 }
@@ -77,20 +89,26 @@ void ats_elm_setSS(){
 }
 
 // run one timestep
-void ats_elm_onestep(const double start_ts, const double end_ts){
+void ats_elm_onestep(const double start_ts, const double end_ts, const int resetIC){
   //TODO
   // TODO comm
   int rank = ats_elm.comm_rank;
 
   if (rank == 0) {
     std::cout << std::endl;
-    std::cout << "INFO: cycle-driver activiated from ELM for time period of " << std:: endl
-			<< start_ts << " -- " << end_ts << " seconds" << std::endl;
+    std::cout << "INFO: cycle-driver activiated from ELM for time period of "
+			<< start_ts << " -- " << end_ts << " second" << std::endl;
   }
 
   //
   try {
-    ats_elm.cycle_driver();
+
+    bool reset = true;
+    if (resetIC == 0) {
+    	reset = false;
+    }
+
+    ats_elm.cycle_driver(start_ts, end_ts, reset);
 	if (rank == 0) {
       std::cout << "INFO: ATS runs sucessfully! " << std::endl;
       std::cout << std::endl;

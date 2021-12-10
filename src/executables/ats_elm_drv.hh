@@ -2,13 +2,16 @@
 
 /* Simulation controller and top-level driver For ONE E3SM Land Model (ELM) Timestep
 
- The interface imitates ats 'main.cc', 'simulation_driver.cc', 'coordinator.cc' very much, WITHOUT heavy print-out info
+ (1) The interface imitates ats 'main.cc', 'simulation_driver.cc', 'coordinator.cc' very much, WITHOUT heavy print-out info
  So the spec. are exactly same.
 
- The building system will compile and link into a package of dynamic libraries,
+ (2) The building system will compile and link into a package of dynamic libraries,
  with libats_elm_interface.dylib as hooking class to ELM's EMI-EM_ATS interface.
 
- ALL inputs, inc. *.xml, required by ATS would be in E3SM's input data directory under 'lnd/clm2/ats'
+ (3) ALL inputs, inc. *.xml, required by ATS would be in E3SM's input data directory under 'lnd/clm2/ats'.
+     NOTE: all parameter list from *.xml ARE merely a data placeholder, by which ELM may reset or override.
+          for an example, not matter what values of 'start time' and 'end time' in cycle_drvier,
+          ELM will over-ride them each ELM timestep.
 
  Authors: F.-M. Yuan (yuanf@ornl.gov), Ethan Coon (coonet@ornl.gov)
 */
@@ -133,43 +136,48 @@ public:
   // some variables in common
   int comm_size;
   int comm_rank;
-
-  // primary functions
-  int drv_init(std::string input_filename); //,  // input .xml file passing from ELM
-		  //const Teuchos::RCP<const Amanzi::Comm_type>& comm); // communicator passing from ELM
-  void cycle_driver();
-
-private:
-  //
-  void cycle_driver_read_parameter();
-
-  // PK methods to be called
-  void setup();
-  double initialize();
-  void finalize();
-  bool advance(double t_old, double t_new, double& dt_next);
-  void visualize(bool force=false);
-  void checkpoint(double dt, bool force=false);
-  double get_dt(bool after_fail=false);
-  Teuchos::RCP<Amanzi::State> get_next_state() { return S_next_; }
-
+  std::string input_filename_;
+  Teuchos::RCP<Teuchos::ParameterList> parameter_list_;
+  Teuchos::RCP<Teuchos::ParameterList> ats_elm_drv_list_;
 
   // PK container and factory
   Teuchos::RCP<Amanzi::PK> pk_;
 
   // states
   Teuchos::RCP<Amanzi::State> S_;
-  Teuchos::RCP<Amanzi::State> S_inter_;
-  Teuchos::RCP<Amanzi::State> S_next_;
-
-  Teuchos::RCP<Amanzi::TreeVector> soln_;
 
   // time step manager
   Teuchos::RCP<Amanzi::TimeStepManager> tsm_;
 
-  // misc setup information
-  Teuchos::RCP<Teuchos::ParameterList> parameter_list_;
-  Teuchos::RCP<Teuchos::ParameterList> ats_elm_drv_list_;
+  // primary functions
+  int drv_init(std::string input_filename); //,  // input .xml file passing from ELM
+		  //const Teuchos::RCP<const Amanzi::Comm_type>& comm); // communicator passing from ELM
+
+  int drv_setup(const double start_ts, const bool initialoutput=false);
+
+  void cycle_driver(const double start_ts, const double end_ts,
+		  const bool resetIC);
+
+  void finalize();
+
+private:
+  //
+  void cycle_driver_read_parameter();
+
+  // PK methods to be called
+  void StatePKsetup();
+  double initialize();
+  bool advance(double t_old, double t_new, double& dt_next);
+  double get_dt(bool after_fail=false);
+  void visualize(bool force=false);
+  void checkpoint(double dt, bool force=false);
+  Teuchos::RCP<Amanzi::State> get_next_state() { return S_next_; }
+
+
+  Teuchos::RCP<Amanzi::State> S_inter_;
+  Teuchos::RCP<Amanzi::State> S_next_;
+
+  Teuchos::RCP<Amanzi::TreeVector> soln_;
 
   double t0_, t1_;
   double max_dt_, min_dt_;

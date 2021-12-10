@@ -6,12 +6,11 @@ License: see $ATS_DIR/COPYRIGHT
 Authors: Ethan Coon, F.-M. Yuan @ ORNL
 
 Implementation (driver) for the ats_elm_interface.  The interface driver is a class to:
-(1) read-in inputs by filename passing from ELM, and communicator synchorizing;
-(2) pass data from ELM to ATS;
+(1) read-in inputs by filename passing from ELM, and communicator synchorizing.
+(2) pass data from ELM to ATS and setup/initialize ATS.
 (3) in ONE single ELM-timestep, run cycle driver, which runs the overall, top level timestep loop.
-As in 'coordinator.cc', this portion of codes instantiates states, ensures they are initialized,
-and runs the timestep loop, including Vis and restart/checkpoint dumps. It contains one and only one PK
--- most likely this PK is an MPC of some type -- to do the actual work.
+    - inputs from ELM: starting/ending time in seconds and will reset "end time" in cycle_driver parameter list;
+    - option from ELM: reset initial conditions or states from ELM (by default NO)
 (4) return data to ELM.
 
 NOTE: Since ELM ususually runs at half-hourly timestep for hundred/thousand years,
@@ -102,8 +101,15 @@ ats_elm_drv::~ats_elm_drv() {
 
 };
 
+// -----------------------------------------------------------------------------
+// setup & initializing
+// -----------------------------------------------------------------------------
+
 int ats_elm_drv::drv_init(std::string input_filename) {
 		//const Teuchos::RCP<const Amanzi::Comm_type>& comm) {
+
+  //
+  input_filename_ = input_filename;
 
   // STEP 1: configuring MPI, mesh (domain), states, ... from input file passing by ELM
   // -- create/set communicator (TODO)
@@ -111,16 +117,56 @@ int ats_elm_drv::drv_init(std::string input_filename) {
   comm_size = comm_->NumProc();
   comm_rank = comm_->MyPID();
 
+  return 0;
+
+}
+
+
+void ats_elm_drv::cycle_driver_read_parameter() {
+  Amanzi::Utils::Units units;
+  t0_ = ats_elm_drv_list_->get<double>("start time");
+  std::string t0_units = ats_elm_drv_list_->get<std::string>("start time units", "s");
+  if (!units.IsValidTime(t0_units)) {
+    Errors::Message msg;
+    msg << "ats_elm_drv start time: unknown time units type: \"" << t0_units << "\"  Valid are: " << units.ValidTimeStrings();
+    Exceptions::amanzi_throw(msg);
+  }
+  bool success;
+  t0_ = units.ConvertTime(t0_, t0_units, "s", success);
+
+  t1_ = ats_elm_drv_list_->get<double>("end time");
+  std::string t1_units = ats_elm_drv_list_->get<std::string>("end time units", "s");
+  if (!units.IsValidTime(t1_units)) {
+    Errors::Message msg;
+    msg << "ats_elm_drv end time: unknown time units type: \"" << t1_units << "\"  Valid are: " << units.ValidTimeStrings();
+    Exceptions::amanzi_throw(msg);
+  }
+  t1_ = units.ConvertTime(t1_, t1_units, "s", success);
+
+  max_dt_ = ats_elm_drv_list_->get<double>("max time step size [s]", 1.0e99);
+  min_dt_ = ats_elm_drv_list_->get<double>("min time step size [s]", 1.0e-12);
+  cycle0_ = ats_elm_drv_list_->get<int>("start cycle",0);
+  cycle1_ = ats_elm_drv_list_->get<int>("end cycle",-1);
+  duration_ = ats_elm_drv_list_->get<double>("wallclock duration [hrs]", -1.0);
+  subcycled_ts_ = ats_elm_drv_list_->get<bool>("subcycled timestep", false);
+
+  // restart control
+  restart_ = ats_elm_drv_list_->isParameter("restart from checkpoint file");
+  if (restart_) restart_filename_ = ats_elm_drv_list_->get<std::string>("restart from checkpoint file");
+}
+
+int ats_elm_drv::drv_setup(const double start_ts, const bool initialoutput) {
+
   // have to read-in parameter list by filename from ELM
-  if (!boost::filesystem::exists(input_filename)) {
+  if (!boost::filesystem::exists(input_filename_)) {
     if (comm_rank == 0) {
-	   std::cerr << "ERROR: input file \"" << input_filename << "\" does not exist." << std::endl;
+	   std::cerr << "ERROR: input file \"" << input_filename_ << "\" does not exist." << std::endl;
 	}
 	return 1;
   }
 
   // parse input file
-  parameter_list_ = Teuchos::getParametersFromXmlFile(input_filename);
+  parameter_list_ = Teuchos::getParametersFromXmlFile(input_filename_);
 
   // -- set default verbosity level to NONE
   Amanzi::VerboseObject::global_default_level = Teuchos::VERB_NONE;
@@ -204,95 +250,31 @@ int ats_elm_drv::drv_init(std::string input_filename) {
   // verbose object (NOTE: already set option level to NONE)
   vo_ = Teuchos::rcp(new Amanzi::VerboseObject("ats_elm_driver", *parameter_list_));
 
-  return 0;
-
-}
-
-void ats_elm_drv::cycle_driver_read_parameter() {
-  Amanzi::Utils::Units units;
-  t0_ = ats_elm_drv_list_->get<double>("start time");
-  std::string t0_units = ats_elm_drv_list_->get<std::string>("start time units", "s");
-  if (!units.IsValidTime(t0_units)) {
-    Errors::Message msg;
-    msg << "ats_elm_drv start time: unknown time units type: \"" << t0_units << "\"  Valid are: " << units.ValidTimeStrings();
-    Exceptions::amanzi_throw(msg);
-  }
-  bool success;
-  t0_ = units.ConvertTime(t0_, t0_units, "s", success);
-
-  t1_ = ats_elm_drv_list_->get<double>("end time");
-  std::string t1_units = ats_elm_drv_list_->get<std::string>("end time units", "s");
-  if (!units.IsValidTime(t1_units)) {
-    Errors::Message msg;
-    msg << "ats_elm_drv end time: unknown time units type: \"" << t1_units << "\"  Valid are: " << units.ValidTimeStrings();
-    Exceptions::amanzi_throw(msg);
-  }
-  t1_ = units.ConvertTime(t1_, t1_units, "s", success);
-
-  max_dt_ = ats_elm_drv_list_->get<double>("max time step size [s]", 1.0e99);
-  min_dt_ = ats_elm_drv_list_->get<double>("min time step size [s]", 1.0e-12);
-  cycle0_ = ats_elm_drv_list_->get<int>("start cycle",0);
-  cycle1_ = ats_elm_drv_list_->get<int>("end cycle",-1);
-  duration_ = ats_elm_drv_list_->get<double>("wallclock duration [hrs]", -1.0);
-  subcycled_ts_ = ats_elm_drv_list_->get<bool>("subcycled timestep", false);
-
-  // restart control
-  restart_ = ats_elm_drv_list_->isParameter("restart from checkpoint file");
-  if (restart_) restart_filename_ = ats_elm_drv_list_->get<std::string>("restart from checkpoint file");
-}
-
-// -----------------------------------------------------------------------------
-// timestep loop
-// -----------------------------------------------------------------------------
-void ats_elm_drv::cycle_driver() {
-  // wallclock duration -- in seconds
-  const double duration(duration_ * 3600);
-
   // start at time t = t0 and initialize the state.
   double dt_restart = -1;
   {
     //Teuchos::TimeMonitor monitor(*setup_timer_);
-    setup();
+    StatePKsetup();
     dt_restart = initialize();
   }
 
-  // get the intial timestep
-  double dt = dt_restart > 0 ? dt_restart : get_dt(false);
+  // if output initial states
+  if (initialoutput) {
+    double dt = dt_restart > 0 ? dt_restart : get_dt(false);
 
-  // visualization at IC
-  visualize(false);
-  checkpoint(dt);
-
-  // iterate process kernels
-  {
-    //Teuchos::TimeMonitor cycle_monitor(*cycle_timer_);
-
-    bool fail = false;
-    while ((S_->time() < t1_) &&
-           ((cycle1_ == -1) || (S_->cycle() <= cycle1_)) &&
-           (duration_ < 0 || timer_->totalElapsedTime(true) < duration) &&
-           dt > 0.) {
-      *S_->GetScalarData("dt", "ats_elm_drv") = dt;
-      *S_inter_->GetScalarData("dt", "ats_elm_drv") = dt;
-      *S_next_->GetScalarData("dt", "ats_elm_drv") = dt;
-
-      S_->set_initial_time(S_->time());
-      S_->set_final_time(S_->time() + dt);
-      S_->set_intermediate_time(S_->time());
-
-      fail = advance(S_->time(), S_->time() + dt, dt);
-    } // while not finished
-
+    // visualization at IC
+    visualize(false);
+    checkpoint(dt);
   }
 
-  // finalizing simulation
-  WriteStateStatistics(*S_, *vo_);
-  //Teuchos::TimeMonitor::summarize(*vo_->os());
+  // have to sync starting time with ELM
+  t0_ = start_ts;
+  ats_elm_drv_list_->set("start time",t0_,"s");
 
-  finalize();
-} // cycle_driver
+  return 0;
+}
 
-void ats_elm_drv::setup() {
+void ats_elm_drv::StatePKsetup() {
   // Set up the states, creating all data structures.
   S_->set_time(t0_);
   S_->set_cycle(cycle0_);
@@ -461,31 +443,70 @@ double ats_elm_drv::initialize() {
   // (e.g. from construction), whereas S_inter and S_next are only valid after
   // set_states() is called.  This allows for standard interfaces.
   pk_->set_states(S_, S_inter_, S_next_);
+
   return dt_restart;
 }
 
 // -----------------------------------------------------------------------------
-double ats_elm_drv::get_dt(bool after_fail) {
-  // get the physical step size
-  double dt = pk_->get_dt();
-  double dt_pk = dt;
-  if (dt < 0.) return dt;
+// ONE single ELM-timestep
+// -----------------------------------------------------------------------------
 
-  // check if the step size has gotten too small
-  if (dt < min_dt_) {
-    Errors::Message message("ats_elm_drv: error, timestep too small");
-    Exceptions::amanzi_throw(message);
+void ats_elm_drv::cycle_driver(const double start_ts, const double end_ts, const bool resetIC_from_elm) {
+  // wallclock duration -- in seconds
+  const double duration(duration_ * 3600);
+
+  // staring/ending time (seconds) from ELM, usually one ELM-timestep
+  double ts = end_ts - start_ts;
+  t0_ = start_ts;
+  t1_ = end_ts;
+  max_dt_ = ts;
+  ats_elm_drv_list_->set("end time",t1_,"s");
+
+  //
+  if (resetIC_from_elm) {
+
+	  // reset initial states
+	  // TODO
+
   }
 
-  // cap the max step size
-  if (dt > max_dt_) {
-    dt = max_dt_;
+  // get the intial timestep
+  double dt = get_dt(false);
+
+  // iterate process kernels
+  {
+
+    bool fail = false;
+
+    std::cout << "INFO: ATS runs start at " << S_->time() << std::endl;
+
+    while ((S_->time() < t1_) &&
+           ((cycle1_ == -1) || (S_->cycle() <= cycle1_)) &&
+           (duration_ < 0 || timer_->totalElapsedTime(true) < duration) &&
+           dt > 0.) {
+      *S_->GetScalarData("dt", "ats_elm_drv") = dt;
+      *S_inter_->GetScalarData("dt", "ats_elm_drv") = dt;
+      *S_next_->GetScalarData("dt", "ats_elm_drv") = dt;
+
+      S_->set_initial_time(S_->time());
+      S_->set_final_time(S_->time() + dt);
+      S_->set_intermediate_time(S_->time());
+
+      fail = advance(S_->time(), S_->time() + dt, dt);
+
+    } // while not finished
+
+    if (not fail) {std::cout << "INFO: ATS runs end at " << S_->time() << std::endl;}
+
   }
 
-  // ask the step manager if this step is ok
-  dt = tsm_->TimeStep(S_next_->time(), dt, after_fail);
-  if (subcycled_ts_) dt = std::min(dt, dt_pk);
-  return dt;
+  //
+  //visualize(false);
+  //checkpoint(dt);
+  // Force checkpoint at the end of simulation, and copy to checkpoint_final
+  pk_->CalculateDiagnostics(S_next_);
+  checkpoint_->Write(*S_next_, 0.0, true);
+
 }
 
 
@@ -556,6 +577,31 @@ bool ats_elm_drv::advance(double t_old, double t_new, double& dt_next) {
   return fail;
 }
 
+double ats_elm_drv::get_dt(bool after_fail) {
+  // get the physical step size
+  double dt = pk_->get_dt();
+  double dt_pk = dt;
+  if (dt < 0.) return dt;
+
+  // check if the step size has gotten too small
+  if (dt < min_dt_) {
+    Errors::Message message("ats_elm_drv: error, timestep too small");
+    Exceptions::amanzi_throw(message);
+  }
+
+  // cap the max step size
+  if (dt > max_dt_) {
+    dt = max_dt_;
+  }
+
+  // ask the step manager if this step is ok
+  dt = tsm_->TimeStep(S_next_->time(), dt, after_fail);
+  if (subcycled_ts_) dt = std::min(dt, dt_pk);
+  return dt;
+}
+
+// -----------------------------------------------------------------------------
+
 void ats_elm_drv::visualize(bool force) {
   // write visualization if requested
   bool dump = force;
@@ -584,7 +630,12 @@ void ats_elm_drv::checkpoint(double dt, bool force) {
   }
 }
 
+// -----------------------------------------------------------------------------
+
 void ats_elm_drv::finalize() {
+  // finalizing simulation
+  WriteStateStatistics(*S_, *vo_);
+
   // Force checkpoint at the end of simulation, and copy to checkpoint_final
   pk_->CalculateDiagnostics(S_next_);
   checkpoint_->Write(*S_next_, 0.0, true);
