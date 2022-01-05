@@ -112,52 +112,14 @@ int ats_elm_drv::drv_init(std::string input_filename) {
   input_filename_ = input_filename;
 
   // STEP 1: configuring MPI, mesh (domain), states, ... from input file passing by ELM
+
   // -- create/set communicator (TODO)
   comm_ = Amanzi::getDefaultComm();  // TODO: should be sync. with 'comm'
   comm_size = comm_->NumProc();
   comm_rank = comm_->MyPID();
 
-  return 0;
+  // STEP 2: read-in a generic .xml from input file passing by ELM
 
-}
-
-
-void ats_elm_drv::cycle_driver_read_parameter() {
-  Amanzi::Utils::Units units;
-  t0_ = ats_elm_drv_list_->get<double>("start time");
-  std::string t0_units = ats_elm_drv_list_->get<std::string>("start time units", "s");
-  if (!units.IsValidTime(t0_units)) {
-    Errors::Message msg;
-    msg << "ats_elm_drv start time: unknown time units type: \"" << t0_units << "\"  Valid are: " << units.ValidTimeStrings();
-    Exceptions::amanzi_throw(msg);
-  }
-  bool success;
-  t0_ = units.ConvertTime(t0_, t0_units, "s", success);
-
-  t1_ = ats_elm_drv_list_->get<double>("end time");
-  std::string t1_units = ats_elm_drv_list_->get<std::string>("end time units", "s");
-  if (!units.IsValidTime(t1_units)) {
-    Errors::Message msg;
-    msg << "ats_elm_drv end time: unknown time units type: \"" << t1_units << "\"  Valid are: " << units.ValidTimeStrings();
-    Exceptions::amanzi_throw(msg);
-  }
-  t1_ = units.ConvertTime(t1_, t1_units, "s", success);
-
-  max_dt_ = ats_elm_drv_list_->get<double>("max time step size [s]", 1.0e99);
-  min_dt_ = ats_elm_drv_list_->get<double>("min time step size [s]", 1.0e-12);
-  cycle0_ = ats_elm_drv_list_->get<int>("start cycle",0);
-  cycle1_ = ats_elm_drv_list_->get<int>("end cycle",-1);
-  duration_ = ats_elm_drv_list_->get<double>("wallclock duration [hrs]", -1.0);
-  subcycled_ts_ = ats_elm_drv_list_->get<bool>("subcycled timestep", false);
-
-  // restart control
-  restart_ = ats_elm_drv_list_->isParameter("restart from checkpoint file");
-  if (restart_) restart_filename_ = ats_elm_drv_list_->get<std::string>("restart from checkpoint file");
-}
-
-int ats_elm_drv::drv_setup(const double start_ts, const bool initialoutput) {
-
-  // have to read-in parameter list by filename from ELM
   if (!boost::filesystem::exists(input_filename_)) {
     if (comm_rank == 0) {
 	   std::cerr << "ERROR: input file \"" << input_filename_ << "\" does not exist." << std::endl;
@@ -168,22 +130,38 @@ int ats_elm_drv::drv_setup(const double start_ts, const bool initialoutput) {
   // parse input file
   parameter_list_ = Teuchos::getParametersFromXmlFile(input_filename_);
 
-  // -- set default verbosity level to NONE
+  // STEP 3: set default verbosity level to NONE
   Amanzi::VerboseObject::global_default_level = Teuchos::VERB_NONE;
 
-  // create meshes, regions, state from input .xml as data holders
+  return 0;
+
+}
+
+
+int ats_elm_drv::drv_setup(const double start_ts, const bool initialoutput) {
+
+  // (1) create meshes, regions, state from input .xml, AND over-ride them from elm if any.
+
   Teuchos::ParameterList& plist = *parameter_list_;
-  // geometric model and regions
+
+  // (1a) ELM surface grids/soil columns passing into ats mesh parameter lists
+  mesh_parameter_reset();
+
+  // (1b) geometric model and regions
   Teuchos::ParameterList reg_params = plist.sublist("regions");
   Teuchos::RCP<Amanzi::AmanziGeometry::GeometricModel> gm =
     Teuchos::rcp(new Amanzi::AmanziGeometry::GeometricModel(3, reg_params, *comm_) );
-  // state
+
+  // (1c) state
   Teuchos::ParameterList state_plist = plist.sublist("state");
   S_ = Teuchos::rcp(new Amanzi::State(state_plist));
-  // create and register meshes
+
+  // (1d) create and register meshes
   ATS::Mesh::createMeshes(plist, comm_, gm, *S_);
 
-  // 'cycle driver' or 'coordinator' parameter-list
+
+
+  // (1e) 'cycle driver' or 'coordinator' parameter-list
   ats_elm_drv_list_ = Teuchos::sublist(parameter_list_, "cycle driver");
   cycle_driver_read_parameter();
 
@@ -197,7 +175,7 @@ int ats_elm_drv::drv_setup(const double start_ts, const bool initialoutput) {
   Teuchos::ParameterList::ConstIterator pk_item = pk_tree_list.begin();
   const std::string &pk_name = pk_tree_list.name(pk_item);
 
-  // STEP 2: model setup
+  // (2) model setup
 
   // create the solution
   soln_ = Teuchos::rcp(new Amanzi::TreeVector());
@@ -273,6 +251,95 @@ int ats_elm_drv::drv_setup(const double start_ts, const bool initialoutput) {
 
   return 0;
 }
+
+// ELM domain, surface-grids/soil profile, passing into ats
+void ats_elm_drv::mesh_parameter_reset(const bool elm_matched) {
+
+  /*---------------------------------------------------------------------------------*/
+  // (1) mesh, including 'surface' and 'domain'
+
+  Teuchos::RCP<Teuchos::ParameterList> mesh_plist_ = Teuchos::sublist(parameter_list_, "mesh");
+  Teuchos::RCP<Teuchos::ParameterList> domain_plist_ = Teuchos::sublist(mesh_plist_, "domain");
+  std::cout << "mesh type: " << domain_plist_->get<Teuchos::string>("mesh type") << std:: endl;
+
+  if (domain_plist_->get<Teuchos::string>("mesh type") == "generate mesh") {
+
+	  Teuchos::RCP<Teuchos::ParameterList>coords_plist_ = Teuchos::sublist(domain_plist_, "generate mesh parameters");
+
+	  Teuchos::Array<double> coords_low;
+	  Teuchos::Array<double> coords_high;
+	  Teuchos::Array<double> coords_point;
+
+	  //surface grids over-ride (TODO)
+
+	  // modify vertical range
+	  coords_low = coords_plist_->get<Teuchos::Array<double>>("domain low coordinate");
+	  coords_high = coords_plist_->get<Teuchos::Array<double>>("domain high coordinate");
+
+	  if (!elm_matched) {
+		// let's ats determine mesh, except for box size (ranges)
+		coords_low[coords_low.size()-1] = elm_col_nodes[length_nodes-1];
+		coords_high[coords_high.size()-1] = elm_col_nodes[0];
+	  } else {
+		//coords = elm_col_nodes;  //incorrect and not here
+	  }
+	  coords_plist_->set("domain low coordinate", coords_low, "m");
+	  coords_plist_->set("domain high coordinate", coords_high, "m");
+
+	  /*---------------------------------------------------------------------------------*/
+	  // (2) regions, including 'computational domain', 'surface domain', 'surface', 'bottom face', etc.
+	  Teuchos::RCP<Teuchos::ParameterList> region_plist_ = Teuchos::sublist(parameter_list_, "regions");
+
+	  Teuchos::RCP<Teuchos::ParameterList> compu_domain_ = Teuchos::sublist(region_plist_, "computational domain");
+	  coords_plist_ = Teuchos::sublist(compu_domain_, "region: box");
+	  coords_plist_->set("low coordinate", coords_low, "m");    // exactly same as 'mesh->domain'
+	  coords_plist_->set("high coordinate", coords_high, "m");  // exactly same as 'mesh->domain'
+
+	  Teuchos::RCP<Teuchos::ParameterList> sideset_surface_ = Teuchos::sublist(region_plist_, "surface");
+	  coords_plist_ = Teuchos::sublist(sideset_surface_, "region: plane");
+	  coords_point = coords_plist_->get<Teuchos::Array<double>>("point");
+	  coords_point[coords_point.size()-1] = elm_surf_gridsZ[0];
+	  coords_plist_->set("point", coords_point, "m");
+
+
+  }; // 'mesh type' is 'generate mesh'
+
+}
+
+void ats_elm_drv::cycle_driver_read_parameter() {
+  Amanzi::Utils::Units units;
+  t0_ = ats_elm_drv_list_->get<double>("start time");
+  std::string t0_units = ats_elm_drv_list_->get<std::string>("start time units", "s");
+  if (!units.IsValidTime(t0_units)) {
+    Errors::Message msg;
+    msg << "ats_elm_drv start time: unknown time units type: \"" << t0_units << "\"  Valid are: " << units.ValidTimeStrings();
+    Exceptions::amanzi_throw(msg);
+  }
+  bool success;
+  t0_ = units.ConvertTime(t0_, t0_units, "s", success);
+
+  t1_ = ats_elm_drv_list_->get<double>("end time");
+  std::string t1_units = ats_elm_drv_list_->get<std::string>("end time units", "s");
+  if (!units.IsValidTime(t1_units)) {
+    Errors::Message msg;
+    msg << "ats_elm_drv end time: unknown time units type: \"" << t1_units << "\"  Valid are: " << units.ValidTimeStrings();
+    Exceptions::amanzi_throw(msg);
+  }
+  t1_ = units.ConvertTime(t1_, t1_units, "s", success);
+
+  max_dt_ = ats_elm_drv_list_->get<double>("max time step size [s]", 1.0e99);
+  min_dt_ = ats_elm_drv_list_->get<double>("min time step size [s]", 1.0e-12);
+  cycle0_ = ats_elm_drv_list_->get<int>("start cycle",0);
+  cycle1_ = ats_elm_drv_list_->get<int>("end cycle",-1);
+  duration_ = ats_elm_drv_list_->get<double>("wallclock duration [hrs]", -1.0);
+  subcycled_ts_ = ats_elm_drv_list_->get<bool>("subcycled timestep", false);
+
+  // restart control
+  restart_ = ats_elm_drv_list_->isParameter("restart from checkpoint file");
+  if (restart_) restart_filename_ = ats_elm_drv_list_->get<std::string>("restart from checkpoint file");
+}
+
+
 
 void ats_elm_drv::StatePKsetup() {
   // Set up the states, creating all data structures.

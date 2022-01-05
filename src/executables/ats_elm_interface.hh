@@ -46,7 +46,11 @@ ATS::ats_elm_drv ats_elm;
 extern "C" {
 #endif /* __cplusplus */
 // input .xml file passing from ELM as c_char array
-int ats_elm_init(const char* input_filename, const int comm, const double start_time); // input .xml file passing from ELM
+int ats_elm_init(const char* input_filename, const int comm, const double start_time);  // input .xml file passing from ELM
+
+void ats_elm_setmesh(const double* surf_gridsX, const double* surf_gridsY,
+		const double* surf_gridsZ, const double* col_nodes,
+		const int len_gridsX, const int len_gridsY, const int len_nodes);
 void ats_elm_setIC();      // initial conditions
 void ats_elm_setBC();      // boundary conditions
 void ats_elm_setSS();      // source/sink terms

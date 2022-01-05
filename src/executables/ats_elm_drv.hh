@@ -140,6 +140,15 @@ public:
   Teuchos::RCP<Teuchos::ParameterList> parameter_list_;
   Teuchos::RCP<Teuchos::ParameterList> ats_elm_drv_list_;
 
+  //
+  const double* elm_surf_gridsX;  // elm surface grids X coord in meters converted from lon, size of at least 2 (for 1 grid)
+  const double* elm_surf_gridsY;  // elm surface grids Y coord in meters converted from lat, size of at least 2 (for 1 grid)
+  const double* elm_surf_gridsZ;  // elm surface grids center elevation in meters, size of at least 1 (for 1 grid)
+  const double* elm_col_nodes;    // elm soil column nodes in meters, size of 16 (for 15 layers) from top to bottom with upward positive;
+  int length_gridsX;
+  int length_gridsY;
+  int length_nodes;
+
   // PK container and factory
   Teuchos::RCP<Amanzi::PK> pk_;
 
@@ -162,6 +171,7 @@ public:
 
 private:
   //
+  void mesh_parameter_reset(const bool elm_matched=false);  // elm_matched: exactly matched with elm-domain; otherwise ranges only
   void cycle_driver_read_parameter();
 
   // PK methods to be called
@@ -172,7 +182,6 @@ private:
   void visualize(bool force=false);
   void checkpoint(double dt, bool force=false);
   Teuchos::RCP<Amanzi::State> get_next_state() { return S_next_; }
-
 
   Teuchos::RCP<Amanzi::State> S_inter_;
   Teuchos::RCP<Amanzi::State> S_next_;

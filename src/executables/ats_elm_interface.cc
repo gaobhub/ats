@@ -60,17 +60,34 @@ int ats_elm_init(const char* c_input_file, const int comm, const double start_ts
 	return ierr;
   }
 
-  // setup ats and initialize fully
-  try {
-	iret = ats_elm.drv_setup(start_ts, true);
-  }catch (int& ierr) {
-	if (rank == 0) {
-    std::cerr << "ERROR in ats_elm driver setup and initialization with error code: " << ierr << std::endl;
-	}
-	return ierr;
+  return iret;
 }
 
-  return iret;
+//
+void ats_elm_setmesh(const double* surf_gridsX, const double* surf_gridsY,
+		const double* surf_gridsZ, const double* col_nodes,
+		const int len_gridsX, const int len_gridsY, const int len_nodes) {
+
+  // coordinates pass from ELM
+  ats_elm.elm_surf_gridsX = surf_gridsX;  // elm surface-grid X coord in m
+  ats_elm.elm_surf_gridsY = surf_gridsY;  // elm surface-grid Y coord in m
+  ats_elm.elm_surf_gridsZ = surf_gridsZ;  // elm surface-grid elevation in m
+  ats_elm.elm_col_nodes = col_nodes;      // elm soil column nodes in m (elevation)
+
+  // need to check the sizes of pointer data
+  ats_elm.length_gridsX = len_gridsX;
+  ats_elm.length_gridsY = len_gridsY;
+  ats_elm.length_nodes = len_nodes;
+
+  // setup ats and initialize fully
+  try {
+	int iret = ats_elm.drv_setup(0.0, true);
+  }catch (int& ierr) {
+	if (ats_elm.comm_rank == 0) {
+    std::cerr << "ERROR in ats_elm driver setup and initialization with error code: " << ierr << std::endl;
+	}
+  }
+
 }
 
 // initial conditions
