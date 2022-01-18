@@ -34,6 +34,8 @@ NOTE: this interface appears not be in a class, otherwise hard to be called by f
 // input file read from ELM calling
 int ats_elm_init(const char* c_input_file, const int comm, const double start_ts) {
 
+  ats_elm = ATS::ats_elm_drv();
+
   // TODO comm
   int rank = ats_elm.comm_rank;
 
@@ -65,19 +67,24 @@ int ats_elm_init(const char* c_input_file, const int comm, const double start_ts
 
 //
 void ats_elm_setmesh(const double* surf_gridsX, const double* surf_gridsY,
-		const double* surf_gridsZ, const double* col_nodes,
+		const double* surf_gridsZ, const double *col_nodes,
 		const int len_gridsX, const int len_gridsY, const int len_nodes) {
-
-  // coordinates pass from ELM
-  ats_elm.elm_surf_gridsX = surf_gridsX;  // elm surface-grid X coord in m
-  ats_elm.elm_surf_gridsY = surf_gridsY;  // elm surface-grid Y coord in m
-  ats_elm.elm_surf_gridsZ = surf_gridsZ;  // elm surface-grid elevation in m
-  ats_elm.elm_col_nodes = col_nodes;      // elm soil column nodes in m (elevation)
 
   // need to check the sizes of pointer data
   ats_elm.length_gridsX = len_gridsX;
   ats_elm.length_gridsY = len_gridsY;
   ats_elm.length_nodes = len_nodes;
+
+  // coordinates pass from ELM
+  ats_elm.elm_surf_gridsX = new double[len_gridsX];              // elm surface-grid X coord in m
+  for (int i=0; i<len_gridsX; i++) {ats_elm.elm_surf_gridsX[i] = surf_gridsX[i];}
+  ats_elm.elm_surf_gridsY = new double[len_gridsY];              // elm surface-grid Y coord in m
+  for (int i=0; i<len_gridsY; i++) {ats_elm.elm_surf_gridsY[i] = surf_gridsY[i];}
+  ats_elm.elm_surf_gridsZ = new double[len_gridsX*len_gridsY];;  // elm surface-grid elevation in m
+  // (TODO) surface node elevation passing
+
+  ats_elm.elm_col_nodes = new double[len_nodes];  // elm soil column nodes in m (elevation)
+  for (int i=0; i<len_nodes; i++) {ats_elm.elm_col_nodes[i] = col_nodes[i];}
 
   // setup ats and initialize fully
   try {
@@ -91,8 +98,17 @@ void ats_elm_setmesh(const double* surf_gridsX, const double* surf_gridsY,
 }
 
 // initial conditions
-void ats_elm_setIC(){
-	//TODO
+void ats_elm_setIC(const double* patm,
+		const double* soilpressure,
+		const double* wtd){
+  //
+
+  //ats_elm.patm = patm;
+  //ats_elm.wtd = wtd;
+  int n = ats_elm.length_nodes-1;
+  ats_elm.soilp = new double[n];
+  for (int i=0; i<ats_elm.length_nodes-1; i++) {ats_elm.soilp[i] = soilpressure[i];}
+
 }
 
 // boundary conditions
@@ -106,8 +122,9 @@ void ats_elm_setSS(){
 }
 
 // run one timestep
-void ats_elm_onestep(const double start_ts, const double end_ts, const int resetIC){
-  //TODO
+void ats_elm_onestep(const double start_ts, const double end_ts,
+		const int resetIC_elm, const int restart){
+
   // TODO comm
   int rank = ats_elm.comm_rank;
 
@@ -115,13 +132,23 @@ void ats_elm_onestep(const double start_ts, const double end_ts, const int reset
     std::cout << std::endl;
     std::cout << "INFO: cycle-driver activiated from ELM for time period of "
 			<< start_ts << " -- " << end_ts << " second" << std::endl;
+    std::cout << "reset ATS IC: " << resetIC_elm  <<std::endl;
   }
+
+  //over-ride ATS initial conditions, if need
+  if (resetIC_elm==1){
+      ats_elm.ic_reset();
+  }
+
+  // always put into ATS BCs/SS, each ELM time-step
+  ats_elm.bc_reset();  // NOT YET
+  ats_elm.ss_reset();
 
   //
   try {
 
     bool reset = true;
-    if (resetIC == 0) {
+    if (restart == 0) {
     	reset = false;
     }
 

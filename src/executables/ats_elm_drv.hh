@@ -140,14 +140,18 @@ public:
   Teuchos::RCP<Teuchos::ParameterList> parameter_list_;
   Teuchos::RCP<Teuchos::ParameterList> ats_elm_drv_list_;
 
-  //
-  const double* elm_surf_gridsX;  // elm surface grids X coord in meters converted from lon, size of at least 2 (for 1 grid)
-  const double* elm_surf_gridsY;  // elm surface grids Y coord in meters converted from lat, size of at least 2 (for 1 grid)
-  const double* elm_surf_gridsZ;  // elm surface grids center elevation in meters, size of at least 1 (for 1 grid)
-  const double* elm_col_nodes;    // elm soil column nodes in meters, size of 16 (for 15 layers) from top to bottom with upward positive;
+  // data from ELM
+  double* elm_surf_gridsX;  // elm surface grids X coord in meters converted from lon, size of at least 2 (for 1 grid)
+  double* elm_surf_gridsY;  // elm surface grids Y coord in meters converted from lat, size of at least 2 (for 1 grid)
+  double* elm_surf_gridsZ;  // elm surface grids center elevation in meters, size of at least 1 (for 1 grid)
+  double* elm_col_nodes;    // elm soil column nodes in meters, size of 16 (for 15 layers) from top to bottom with upward positive;
   int length_gridsX;
   int length_gridsY;
   int length_nodes;
+
+  double* patm;             // elm atm. air pressure, unit: Pa, 1-D (surf-grids)
+  double* soilp;            // elm soil column hydraulic pressure, unit: Pa, 2-D (surf-grids, soil col. layers)
+  double* wtd;              // elm soil column water table depth, unit: m, 1-D (surf-grids)
 
   // PK container and factory
   Teuchos::RCP<Amanzi::PK> pk_;
@@ -164,6 +168,12 @@ public:
 
   int drv_setup(const double start_ts, const bool initialoutput=false);
 
+  void ic_reset();
+
+  void bc_reset();
+
+  void ss_reset();
+
   void cycle_driver(const double start_ts, const double end_ts,
 		  const bool resetIC);
 
@@ -172,11 +182,13 @@ public:
 private:
   //
   void mesh_parameter_reset(const bool elm_matched=false);  // elm_matched: exactly matched with elm-domain; otherwise ranges only
+  void mesh_vertices_reset();
   void cycle_driver_read_parameter();
 
   // PK methods to be called
   void StatePKsetup();
   double initialize();
+
   bool advance(double t_old, double t_new, double& dt_next);
   double get_dt(bool after_fail=false);
   void visualize(bool force=false);
