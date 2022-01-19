@@ -117,22 +117,34 @@ void ats_elm_setBC(){
 }
 
 // source/sink terms
-void ats_elm_setSS(){
-	//TODO
+void ats_elm_setSS(const double* ss_soiltop, const double* ss_soilbottom,
+		const double* ss_roottran, const double* ss_other){
+
+  int c = (ats_elm.length_gridsX-1)*(ats_elm.length_gridsY-1); //TODO - need to check how c++ 2D-array arranged
+  ats_elm.net_surface_grossflux = new double[c];
+  for (int i=0; i<c; i++) {
+    ats_elm.net_surface_grossflux[i] = ss_soiltop[i];
+    std::cout<<"soil top ss: "<<i<<" - "<<ss_soiltop[i]<<std::endl;
+  }
+
+  int n = ats_elm.length_nodes-1;
+  ats_elm.root_waterextract = new double[n];
+  for (int i=0; i<n; i++) {
+	  ats_elm.root_waterextract[i] = ss_roottran[i];
+	  std::cout<<"root-transpiration ss: "<<i<<" - "<<ss_roottran[i]<<std::endl;
+  }
 }
 
 // run one timestep
 void ats_elm_onestep(const double start_ts, const double end_ts,
 		const int resetIC_elm, const int restart){
 
-  // TODO comm
   int rank = ats_elm.comm_rank;
 
   if (rank == 0) {
     std::cout << std::endl;
     std::cout << "INFO: cycle-driver activiated from ELM for time period of "
 			<< start_ts << " -- " << end_ts << " second" << std::endl;
-    std::cout << "reset ATS IC: " << resetIC_elm  <<std::endl;
   }
 
   //over-ride ATS initial conditions, if need
@@ -172,6 +184,25 @@ void ats_elm_onestep(const double start_ts, const double end_ts,
 
 // return data to ELM's ATS interface
 void ats_elm_getdata(){
-	//TODO
+	int rank = ats_elm.comm_rank;
+
+	//
+	try {
+
+	    ats_elm.get_data();
+
+	} catch (std::string& s) {
+		if (rank == 0) {
+	      std::cerr << "ERROR:" << std::endl
+	                << s << std::endl;
+	    }
+	} catch (int& ierr) {
+		if (rank == 0) {
+	      std::cerr << "ERROR: unknown error code " << ierr << std::endl;
+		}
+	}
+
+
+	//TODO: data-passing to ELM
 }
 

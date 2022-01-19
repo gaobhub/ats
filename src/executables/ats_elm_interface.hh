@@ -57,7 +57,8 @@ void ats_elm_setIC(const double* patm,
 		const double* soilpressure,
 		const double* wtd);      // initial conditions
 void ats_elm_setBC();      // boundary conditions
-void ats_elm_setSS();      // source/sink terms
+void ats_elm_setSS(const double* ss_soiltop, const double* ss_soilbottom,
+		const double* ss_roottran, const double* ss_other);      // source-sink terms
 void ats_elm_onestep(const double start_time, const double end_time, // advance one ELM-timestep
 		const int resetIC_from_elm=0,                                // 0 or 1 pass from ELM
         const int restart_from_ats=0);                               // 0 or 1 pass from ELM, must have 'checkingpoint_final.h5' properly

@@ -153,6 +153,9 @@ public:
   double* soilp;            // elm soil column hydraulic pressure, unit: Pa, 2-D (surf-grids, soil col. layers)
   double* wtd;              // elm soil column water table depth, unit: m, 1-D (surf-grids)
 
+  double* net_surface_grossflux;
+  double* root_waterextract;
+
   // PK container and factory
   Teuchos::RCP<Amanzi::PK> pk_;
 
@@ -177,12 +180,14 @@ public:
   void cycle_driver(const double start_ts, const double end_ts,
 		  const bool resetIC);
 
+  void get_data();
+
   void finalize();
 
 private:
   //
   void mesh_parameter_reset(const bool elm_matched=false);  // elm_matched: exactly matched with elm-domain; otherwise ranges only
-  void mesh_vertices_reset();
+  void mesh_vertices_checking(std::string mesh_name, bool reset_from_elm=false);
   void cycle_driver_read_parameter();
 
   // PK methods to be called

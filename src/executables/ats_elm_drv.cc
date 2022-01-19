@@ -145,6 +145,7 @@ int ats_elm_drv::drv_setup(const double start_ts, const bool initialoutput) {
   Teuchos::ParameterList& plist = *parameter_list_;
 
   // (1a) ELM surface grids/soil columns passing into ats mesh parameter lists
+  //     if mesh type is 'generate mesh' from box-range
   mesh_parameter_reset();
 
   // (1b) geometric model and regions
@@ -159,7 +160,12 @@ int ats_elm_drv::drv_setup(const double start_ts, const bool initialoutput) {
   // (1d) create and register meshes
   ATS::Mesh::createMeshes(plist, comm_, gm, *S_);
 
-  //mesh_vertices_reset(); //TODO - not yet works
+  // reset mesh coordinates, if required
+  //TODO: to be a mapping of vertices from ATS to ELM
+  Amanzi::Key mesh_name = "domain";
+  mesh_vertices_checking(mesh_name, false);
+  mesh_name = "surface";
+  mesh_vertices_checking(mesh_name, false);
 
   // (1e) 'cycle driver' or 'coordinator' parameter-list
   ats_elm_drv_list_ = Teuchos::sublist(parameter_list_, "cycle driver");
@@ -233,9 +239,6 @@ int ats_elm_drv::drv_setup(const double start_ts, const bool initialoutput) {
     //Teuchos::TimeMonitor monitor(*setup_timer_);
     StatePKsetup();
     dt_restart = initialize();
-
-    //
-    // ic_reset();
 
   }
 
@@ -315,26 +318,26 @@ void ats_elm_drv::mesh_parameter_reset(const bool elm_matched) {
 
 }
 
-void ats_elm_drv::mesh_vertices_reset(){
+void ats_elm_drv::mesh_vertices_checking(std::string mesh_name, bool reset_from_elm){
 
-  //for (Amanzi::State::mesh_iterator mesh=S_->mesh_begin();
-  //     mesh!=S_->mesh_end(); ++mesh) {
 
-      if (S_->HasMesh("domain")) {
-        auto mesh_ = S_->GetMesh("domain");
+  if (S_->HasMesh(mesh_name)) {
+        auto mesh_ = S_->GetMesh(mesh_name);
+        mesh_ ->build_columns();
+
         int dim = 3;
+        if (mesh_name=="surface") {dim=2;}
         Amanzi::AmanziGeometry::Point coords(dim);
 
         // number of vertices
         int nV = mesh_ -> num_entities(Amanzi::AmanziMesh::NODE,
                                     Amanzi::AmanziMesh::Parallel_type::OWNED);  // or, 'ALL'?
 
-        // collect coordinates and override Z coords (TODO: X, Y)
-
+        std::cout<< "checking vertice:  " << mesh_name <<" - Total Vertice no.: "<<nV<< std::endl;
+        std::cout<< "iV - n_node_abv - Coordinates (X,Y[,Z]) "<<std::endl;
         for (int iV=0; iV<nV; iV++) {
           // get the coords of the node
           mesh_ -> node_get_coordinates(iV,&coords);
-          auto old = coords;
 
           // need to known Z indices for current node
           int n_nabvid = 0;
@@ -343,20 +346,19 @@ void ats_elm_drv::mesh_vertices_reset(){
         	  n_nabvid = n_nabvid + 1;
         	  nabvid = mesh_->node_get_node_above(nabvid);
           }
-          coords[dim-1] = elm_col_nodes[n_nabvid];  // NOT [length_nodes-nextid-1] ??? (further checking)
 
-          //mesh_ -> node_set_coordinates(iV, coords);
-          // S_->GetMesh("domain") NON-changeable?? - (TODO) needs a new thought here
+          // override Z coords (TODO: X, Y), if required
+          if (reset_from_elm) {
+        	  coords[dim-1] = elm_col_nodes[n_nabvid];  // NOT [length_nodes-nextid-1] ??? (further checking)
+        	  //mesh_ -> node_set_coordinates(iV, coords);
+        	  // S_->GetMesh("domain") NON-changeable?? - (TODO) needs a new thought here
+          }
 
-
-          std::cout<< "checking vertice " << iV <<" - iZ "<<n_nabvid<<" ; ";
-          std::cout << "old coords: "<< old << " - reset: " << coords;
-          std::cout<< std::endl;
+          std::cout<< iV <<" - "<<n_nabvid<<" - ("<< coords<<")"<< std::endl;
 
         }
-      }
+   }
 
-   //}
 
 }
 
@@ -568,85 +570,6 @@ double ats_elm_drv::initialize() {
   return dt_restart;
 }
 
-// reset ats initial conditions (IC)
-void ats_elm_drv::ic_reset() {
-  // Three (3) types of ICs
-  // (1) constants, in State
-  // (2)
-
-  // (3) real IC, i.e. primary variable in PKs
-  Teuchos::RCP<Teuchos::ParameterList> pk_plist_ = Teuchos::sublist(parameter_list_, "PKs");
-  Teuchos::RCP<Teuchos::ParameterList> flow_plist_ = Teuchos::sublist(pk_plist_, "flow");
-  std::string pk_name_ = "flow";
-  std::string pv_key = flow_plist_->get<std::string>("primary variable key");
-  std::cout<<"flow pv_key: "<< pv_key <<std::endl;
-
-  if (S_->HasField(pv_key)){
-	Teuchos::RCP<Amanzi::Field> field = S_->GetField(pv_key, pk_name_);
-	std::cout <<"state field: "<< field->fieldname()<<" - type: "<< field->type()<<std::endl;
-    std::cout << "data: " << *(S_->GetFieldData(pv_key)->ViewComponent("cell")) <<std::endl;
-
-    auto mesh_ = S_->GetMesh("domain");
-    int ncells = mesh_->num_entities(Amanzi::AmanziMesh::CELL, Amanzi::AmanziMesh::Parallel_type::OWNED);
-    auto &pc = *(S_->GetFieldData(pv_key)->ViewComponent("cell"));
-    for (int c = 0; c < ncells; ++c) {
-      const auto& xyzc = mesh_->cell_centroid(c);
-      std::cout <<"coords: "<<xyzc<<" - "<<pc[0][c] << " - "<< soilp[c]<<std::endl;
-      pc[0][c] = soilp[c];
-    }
-
-    std::cout << "data 2: " << *(S_->GetFieldData(pv_key)->ViewComponent("cell")) <<std::endl;
-
-  }
-
-}
-
-// reset ats initial conditions (IC)
-void ats_elm_drv::bc_reset() {
-
-  // TODO
-  Teuchos::RCP<Teuchos::ParameterList> pk_plist_ = Teuchos::sublist(parameter_list_, "PKs");
-  Teuchos::RCP<Teuchos::ParameterList> flow_plist_ = Teuchos::sublist(pk_plist_, "flow");
-  std::string pk_name_ = "flow";
-
-}
-
-// reset ats source-sink terms (SS)
-void ats_elm_drv::ss_reset() {
-
-  //
-  Teuchos::RCP<Teuchos::ParameterList> pk_plist_ = Teuchos::sublist(parameter_list_, "PKs");
-  Teuchos::RCP<Teuchos::ParameterList> flow_plist_ = Teuchos::sublist(pk_plist_, "flow");
-  std::string pk_name_ = "flow";
-  std::string pv_key = flow_plist_->get<std::string>("primary variable key");
-  std::cout<<"flow pv_key: "<< pv_key <<std::endl;
-
-  for (auto f_it = S_->field_begin(); f_it != S_->field_end(); ++f_it) {
-    std::string name(f_it->first);
-    std::cout<<"checking state field: " <<name <<std::endl;
-  }
-
-  if (S_->HasField(pv_key)){
-	Teuchos::RCP<Amanzi::Field> field = S_->GetField(pv_key, pk_name_);
-	std::cout <<"state field: "<< field->fieldname()<<" - type: "<< field->type()<<std::endl;
-    std::cout << "data: " << *(S_->GetFieldData(pv_key)->ViewComponent("cell")) <<std::endl;
-
-    auto mesh_ = S_->GetMesh("domain");
-    int ncells = mesh_->num_entities(Amanzi::AmanziMesh::CELL, Amanzi::AmanziMesh::Parallel_type::OWNED);
-    auto &pc = *(S_->GetFieldData(pv_key)->ViewComponent("cell"));
-    for (int c = 0; c < ncells; ++c) {
-      const auto& xyzc = mesh_->cell_centroid(c);
-      std::cout <<"coords: "<<xyzc<<" - "<<pc[0][c] << " - "<< soilp[c]<<std::endl;
-      //pc[0][c] = soilp[c];
-    }
-
-    std::cout << "data 2: " << *(S_->GetFieldData(pv_key)->ViewComponent("cell")) <<std::endl;
-
-  }
-
-}
-
-
 // -----------------------------------------------------------------------------
 // ONE single ELM-timestep
 // -----------------------------------------------------------------------------
@@ -829,6 +752,135 @@ void ats_elm_drv::checkpoint(double dt, bool force) {
     checkpoint_->Write(*S_next_, dt);
   }
 }
+
+// -------------------------------------------------------------------------------------------
+
+// reset ats initial conditions (IC)
+void ats_elm_drv::ic_reset() {
+  // Three (3) types of ICs
+  // (1) constants, in State
+  // (2)
+
+  // (3) real IC, i.e. primary variable in PKs
+  Teuchos::RCP<Teuchos::ParameterList> pk_plist_ = Teuchos::sublist(parameter_list_, "PKs");
+  Teuchos::RCP<Teuchos::ParameterList> flow_plist_ = Teuchos::sublist(pk_plist_, "flow");
+  std::string pk_name_ = "flow";
+  std::string pv_key = flow_plist_->get<std::string>("primary variable key");
+  std::cout<<"flow pv_key: "<< pv_key <<std::endl;
+
+  if (S_->HasField(pv_key)){
+	Teuchos::RCP<Amanzi::Field> field = S_->GetField(pv_key, pk_name_);
+	std::cout <<"state field: "<< field->fieldname()<<" - type: "<< field->type()<<std::endl;
+    std::cout << "data: " << *(S_->GetFieldData(pv_key)->ViewComponent("cell")) <<std::endl;
+
+    auto mesh_ = S_->GetMesh("domain");
+    int ncells = mesh_->num_entities(Amanzi::AmanziMesh::CELL, Amanzi::AmanziMesh::Parallel_type::OWNED);
+    auto &pc = *(S_->GetFieldData(pv_key)->ViewComponent("cell"));
+    for (int c = 0; c < ncells; ++c) {
+      const auto& xyzc = mesh_->cell_centroid(c);
+      std::cout <<"coords: "<<xyzc<<" - "<<pc[0][c] << " - "<< soilp[c]<<std::endl;
+      pc[0][c] = soilp[c];
+    }
+
+    std::cout << "data 2: " << *(S_->GetFieldData(pv_key)->ViewComponent("cell")) <<std::endl;
+
+  }
+
+}
+
+// reset ats initial conditions (IC)
+void ats_elm_drv::bc_reset() {
+
+  // TODO
+  Teuchos::RCP<Teuchos::ParameterList> pk_plist_ = Teuchos::sublist(parameter_list_, "PKs");
+  Teuchos::RCP<Teuchos::ParameterList> flow_plist_ = Teuchos::sublist(pk_plist_, "flow");
+  std::string pk_name_ = "flow";
+
+}
+
+// reset ats source-sink terms (SS)
+void ats_elm_drv::ss_reset() {
+
+  //PKs
+  Teuchos::RCP<Teuchos::ParameterList> pk_plist_ = Teuchos::sublist(parameter_list_, "PKs");
+  Teuchos::RCP<Teuchos::ParameterList> flow_plist_ = Teuchos::sublist(pk_plist_, "flow");
+  Teuchos::RCP<Teuchos::ParameterList> surfflow_plist_ = Teuchos::sublist(pk_plist_, "overland flow");
+
+  // overland flow SS, e.g. rain/snow-melting/rain-throughfall, -soil evap. etc.
+  // NOTE: here all treated as potential
+  std::string pk_name = "overland flow";
+  if((surfflow_plist_->get<bool>("source term"))){
+    std::string ss_key = surfflow_plist_->get<std::string>("source key");
+    //std::cout<<"--------------------------------------- "<<std::endl << pk_name  <<std::endl;
+    //std::cout<<"source key: "<< ss_key <<std::endl;
+    if (S_->HasField(ss_key)){
+        //std::cout << "data: " << *(S_->GetFieldData(ss_key)->ViewComponent("cell")) <<std::endl;
+
+		auto mesh_ = S_->GetMesh("surface");
+		int ncells = mesh_->num_entities(Amanzi::AmanziMesh::CELL, Amanzi::AmanziMesh::Parallel_type::OWNED);
+		auto &ss = *(S_->GetFieldData(ss_key)->ViewComponent("cell"));
+  		for (int c = 0; c < ncells; ++c) {
+  		  const auto& xyc = mesh_->cell_centroid(c);
+  	      //std::cout <<"coords: "<<xyc<<" - "<<ss[0][c] << " - "<< net_surface_grossflux[c]<<std::endl;
+          ss[0][c] = net_surface_grossflux[c];
+  	    }
+		//std::cout << "data: " << *(S_->GetFieldData(ss_key)->ViewComponent("cell")) <<std::endl;
+
+	  }
+  }
+
+  //flow SS, e.g. root water extraction (i.e. transpiration)
+  pk_name = "flow";
+  if((flow_plist_->get<bool>("source term"))){
+    std::string ss2_key = flow_plist_->get<std::string>("source key");
+    //std::cout<<"--------------------------------------- "<<std::endl << pk_name  <<std::endl;
+    //std::cout<<"source key: "<< ss2_key <<std::endl;
+
+    if (S_->HasField(ss2_key)){
+  		auto mesh2_ = S_->GetMesh("domain");
+  		int ncells = mesh2_->num_entities(Amanzi::AmanziMesh::CELL, Amanzi::AmanziMesh::Parallel_type::OWNED);
+  		auto &ss2 = *(S_->GetFieldData(ss2_key)->ViewComponent("cell"));
+ 		//std::cout << "data 2: " << *(S_->GetFieldData(ss2_key)->ViewComponent("cell")) <<std::endl;
+   		for (int c = 0; c < ncells; ++c) {
+  		  const auto& xyzc = mesh2_->cell_centroid(c);
+  	      //std::cout <<"coords: "<<xyzc<<" - "<<ss2[0][c] << " - "<< root_waterextract[c]<<std::endl;
+  	      ss2[0][c] = root_waterextract[c];
+  	    }
+
+  		//std::cout << "data 2: " << *(S_->GetFieldData(ss2_key)->ViewComponent("cell")) <<std::endl;
+    }
+  }
+
+}
+
+// read data
+void ats_elm_drv::get_data() {
+
+  // read primary variable in PKs
+  Teuchos::RCP<Teuchos::ParameterList> pk_plist_ = Teuchos::sublist(parameter_list_, "PKs");
+  Teuchos::RCP<Teuchos::ParameterList> flow_plist_ = Teuchos::sublist(pk_plist_, "flow");
+  std::string pk_name = "flow";
+  std::string domain_name = "domain";
+
+  auto mesh_ = S_->GetMesh(domain_name);
+  int ncells = mesh_->num_entities(Amanzi::AmanziMesh::CELL, Amanzi::AmanziMesh::Parallel_type::OWNED);
+
+  std::string pv_key = flow_plist_->get<std::string>("primary variable key");
+  std::cout<<"flow pv_key: "<< pv_key <<std::endl;
+
+  if (S_->HasField(pv_key)){
+	Teuchos::RCP<Amanzi::Field> field = S_->GetField(pv_key, pk_name);
+	std::cout <<"state field: "<< field->fieldname()<<" - type: "<< field->type()<<std::endl;
+    auto &pc = *(S_->GetFieldData(pv_key)->ViewComponent("cell"));
+    for (int c = 0; c < ncells; ++c) {
+      const auto& xyzc = mesh_->cell_centroid(c);
+      std::cout <<"coords: "<<xyzc<<" - "<<pc[0][c] <<std::endl;
+    }
+
+  }
+
+}
+
 
 // -----------------------------------------------------------------------------
 
