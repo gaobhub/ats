@@ -149,6 +149,13 @@ public:
   int length_gridsY;
   int length_nodes;
 
+  double* porosity;
+  double* hksat;
+  double* CH_bsw;
+  double* CH_smpsat;
+  double* CH_sr;
+  double* eff_porosity;
+
   double* patm;             // elm atm. air pressure, unit: Pa, 1-D (surf-grids)
   double* soilp;            // elm soil column hydraulic pressure, unit: Pa, 2-D (surf-grids, soil col. layers)
   double* wtd;              // elm soil column water table depth, unit: m, 1-D (surf-grids)

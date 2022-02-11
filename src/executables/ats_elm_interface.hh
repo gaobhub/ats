@@ -53,6 +53,9 @@ int ats_elm_init(const char* input_filename, const int comm, const double start_
 void ats_elm_setmesh(const double* surf_gridsX, const double* surf_gridsY,
 		const double* surf_gridsZ, const double *col_nodes,
 		const int len_gridsX, const int len_gridsY, const int len_nodes);
+void ats_elm_setmat(const double* porosity, const double* hksat,
+		const double* CH_bsw, const double* CH_smpsat, const double* CH_sr,
+		const double* eff_porosity);
 void ats_elm_setIC(const double* patm,
 		const double* soilpressure,
 		const double* wtd);      // initial conditions

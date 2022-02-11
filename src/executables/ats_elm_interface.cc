@@ -97,6 +97,30 @@ void ats_elm_setmesh(const double* surf_gridsX, const double* surf_gridsY,
 
 }
 
+//
+void ats_elm_setmat(const double* porosity, const double* hksat,
+		const double* CH_bsw, const double* CH_smpsat, const double* CH_sr,
+		const double* eff_porosity){
+
+  int n = ats_elm.length_nodes-1;
+  ats_elm.porosity = new double[n];
+  ats_elm.hksat    = new double[n];
+  ats_elm.CH_bsw   = new double[n];
+  ats_elm.CH_smpsat= new double[n];
+  ats_elm.CH_sr    = new double[n];
+  ats_elm.eff_porosity = new double[n];
+  for (int i=0; i<ats_elm.length_nodes-1; i++) {
+    ats_elm.porosity[i] = porosity[i];
+    ats_elm.hksat[i]    = hksat[i];
+    ats_elm.CH_bsw[i]   = CH_bsw[i];
+    ats_elm.CH_smpsat[i]= CH_smpsat[i];
+    ats_elm.CH_sr[i]    = CH_sr[i];
+    ats_elm.eff_porosity[i] = eff_porosity[i];
+
+  }
+
+}
+
 // initial conditions
 void ats_elm_setIC(const double* patm,
 		const double* soilpressure,
