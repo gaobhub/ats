@@ -40,7 +40,6 @@ NOTE: Since ELM ususually runs at half-hourly timestep for hundred/thousand year
 
 //
 #include "GeometricModel.hh"
-#include "State.hh"
 #include "ats_mesh_factory.hh"
 
 //
@@ -52,6 +51,7 @@ NOTE: Since ELM ususually runs at half-hourly timestep for hundred/thousand year
 #include "Checkpoint.hh"
 #include "UnstructuredObservations.hh"
 #include "State.hh"
+#include "StateDefs.hh"
 #include "PK.hh"
 #include "TreeVector.hh"
 #include "PK_Factory.hh"
@@ -137,136 +137,33 @@ int ats_elm_drv::drv_init(std::string input_filename) {
 
 }
 
+// passing some of ELM data by resetting 'parameter list' in *.xml
+// but have to do this prior to model setup
+void ats_elm_drv::plist_reset(const double start_ts) {
 
-int ats_elm_drv::drv_setup(const double start_ts, const bool initialoutput) {
-
-  // (1) create meshes, regions, state from input .xml, AND over-ride them from elm if any.
-
-  Teuchos::ParameterList& plist = *parameter_list_;
-
-  // (1a) ELM surface grids/soil columns passing into ats mesh parameter lists
+  // (0a) ELM surface grids/soil columns passing into ats mesh parameter lists
   //     if mesh type is 'generate mesh' from box-range
-  mesh_parameter_reset();
+  plist_general_mesh_reset();
 
-  // (1b) geometric model and regions
-  Teuchos::ParameterList reg_params = plist.sublist("regions");
-  Teuchos::RCP<Amanzi::AmanziGeometry::GeometricModel> gm =
-    Teuchos::rcp(new Amanzi::AmanziGeometry::GeometricModel(3, reg_params, *comm_) );
+  // (0b) 'cycle driver' or 'coordinator' parameter-list
+  ats_elm_drv_plist_ = Teuchos::sublist(parameter_list_, "cycle driver");
+  plist_cycle_driver_reset(start_ts);
 
-  // (1c) state
-  Teuchos::ParameterList state_plist = plist.sublist("state");
-  S_ = Teuchos::rcp(new Amanzi::State(state_plist));
+  // (0c) parameter lists of 'pks' and 'state' for resetting from ELM
+  ats_elm_pks_plist_ = Teuchos::sublist(parameter_list_, "PKs");
+  ats_elm_state_plist_ = Teuchos::sublist(parameter_list_, "state");
+  plist_material_reset();
 
-  // (1d) create and register meshes
-  ATS::Mesh::createMeshes(plist, comm_, gm, *S_);
-
-  // reset mesh coordinates, if required
-  //TODO: to be a mapping of vertices from ATS to ELM
-  Amanzi::Key mesh_name = "domain";
-  mesh_vertices_checking(mesh_name, false);
-  mesh_name = "surface";
-  mesh_vertices_checking(mesh_name, false);
-
-  // (1e) 'cycle driver' or 'coordinator' parameter-list
-  ats_elm_drv_list_ = Teuchos::sublist(parameter_list_, "cycle driver");
-  cycle_driver_read_parameter();
-
-  // create the top level PK
-  Teuchos::ParameterList pk_tree_list = ats_elm_drv_list_->sublist("PK tree");
-  if (pk_tree_list.numParams() != 1) {
-    Errors::Message message("CycleDriver: PK tree list should contain exactly one root node list");
-    Exceptions::amanzi_throw(message);
-  }
-  Teuchos::ParameterList::ConstIterator pk_item = pk_tree_list.begin();
-  const std::string &pk_name = pk_tree_list.name(pk_item);
-
-  // (2) model setup
-
-  // create the solution
-  soln_ = Teuchos::rcp(new Amanzi::TreeVector());
-
-  // create the pk
-  Amanzi::PKFactory pk_factory;
-  pk_ = pk_factory.CreatePK(pk_name, pk_tree_list, parameter_list_, S_, soln_);
-
-  // create the checkpointing
-  Teuchos::ParameterList& chkp_plist = parameter_list_->sublist("checkpoint");
-  checkpoint_ = Teuchos::rcp(new Amanzi::Checkpoint(chkp_plist, *S_));
-
-  // create the observations
-  Teuchos::ParameterList& observation_plist = parameter_list_->sublist("observations");
-  for (auto& sublist : observation_plist) {
-    if (observation_plist.isSublist(sublist.first)) {
-      observations_.emplace_back(Teuchos::rcp(new Amanzi::UnstructuredObservations(
-                observation_plist.sublist(sublist.first))));
-    } else {
-      Errors::Message msg("\"observations\" list must only include sublists.");
-      Exceptions::amanzi_throw(msg);
-    }
-  }
-
-  // check whether meshes are deformable, and if so require a nodal position
-  for (Amanzi::State::mesh_iterator mesh=S_->mesh_begin();
-       mesh!=S_->mesh_end(); ++mesh) {
-
-    if (S_->IsDeformableMesh(mesh->first) && !S_->IsAliasedMesh(mesh->first)) {
-      std::string node_key;
-      if (mesh->first != "domain") node_key= mesh->first+std::string("-vertex_coordinate");
-      else node_key = std::string("vertex_coordinate");
-
-      S_->RequireField(node_key)->SetMesh(mesh->second.first)->SetGhosted()
-          ->AddComponent("node", Amanzi::AmanziMesh::NODE, mesh->second.first->space_dimension());
-    }
-
-    // writes region information
-    if (parameter_list_->isSublist("analysis")) {
-      Amanzi::InputAnalysis analysis(mesh->second.first, mesh->first);
-      analysis.Init(parameter_list_->sublist("analysis").sublist(mesh->first));
-      analysis.RegionAnalysis();
-      analysis.OutputBCs();
-    }
-  }
-
-  // create the time step manager
-  tsm_ = Teuchos::rcp(new Amanzi::TimeStepManager());
-
-  // verbose object (NOTE: already set option level to NONE)
-  vo_ = Teuchos::rcp(new Amanzi::VerboseObject("ats_elm_driver", *parameter_list_));
-
-  // start at time t = t0 and initialize the state.
-  double dt_restart = -1;
-  {
-    //Teuchos::TimeMonitor monitor(*setup_timer_);
-    StatePKsetup();
-    dt_restart = initialize();
-
-  }
-
-  // if output initial states
-  if (initialoutput) {
-    double dt = dt_restart > 0 ? dt_restart : get_dt(false);
-
-    // visualization at IC
-    visualize(false);
-    checkpoint(dt);
-  }
-
-  // have to sync starting time with ELM
-  t0_ = start_ts;
-  ats_elm_drv_list_->set("start time",t0_,"s");
-
-  return 0;
 }
 
 // ELM domain, surface-grids/soil profile, passing into ats via 'plist'
-void ats_elm_drv::mesh_parameter_reset(const bool elm_matched) {
+void ats_elm_drv::plist_general_mesh_reset(const bool elm_matched) {
 
   /*---------------------------------------------------------------------------------*/
   // (1) mesh, including 'surface' and 'domain'
 
   Teuchos::RCP<Teuchos::ParameterList> mesh_plist_ = Teuchos::sublist(parameter_list_, "mesh");
   Teuchos::RCP<Teuchos::ParameterList> domain_plist_ = Teuchos::sublist(mesh_plist_, "domain");
-  std::cout << "mesh type: " << domain_plist_->get<Teuchos::string>("mesh type") << std:: endl;
 
   if (domain_plist_->get<Teuchos::string>("mesh type") == "generate mesh") {
 
@@ -318,84 +215,249 @@ void ats_elm_drv::mesh_parameter_reset(const bool elm_matched) {
 
 }
 
-void ats_elm_drv::mesh_vertices_checking(std::string mesh_name, bool reset_from_elm){
+// override whatever read-in from *.xml
+void ats_elm_drv::plist_material_reset() {
+
+  // porosity, viscosity, & permibility in 'state -> field evaluators'
+  Teuchos::RCP<Teuchos::ParameterList> field_evals_plist_ = Teuchos::sublist(ats_elm_state_plist_, "field evaluators");
+  Teuchos::RCP<Teuchos::ParameterList> state_constants_plist_ = Teuchos::sublist(ats_elm_state_plist_, "initial conditions");
+
+  // (1a) porosity
+  auto base_poro_plist_ = Teuchos::sublist(
+		  Teuchos::sublist(field_evals_plist_, "base_porosity"), "function");
+  int c=0;
+  for (auto& entry : *base_poro_plist_) {
+    std::string layer_name = entry.first;
+
+    Teuchos::RCP<Teuchos::ParameterList> layer_plist_ = Teuchos::sublist(
+		                  Teuchos::sublist(
+		                    Teuchos::sublist(base_poro_plist_, layer_name),"function"),
+					    "function-constant");
+    double poro = layer_plist_->get<double>("value");
+    poro = porosity[c];
+    layer_plist_->set("value", poro);
+    c++;
+  }
+
+  // (1b) permeability
+  auto visco_plist_ = Teuchos::sublist(field_evals_plist_, "viscosity_liquid");
+  double visco = visco_plist_->get<double>("value");
+  //std::cout<<"viscosity: "<< visco<<std::endl;
+
+  auto den_mass_plist_ = Teuchos::sublist(field_evals_plist_, "mass_density_liquid");
+  double den_mass = den_mass_plist_->get<double>("value");
+  //std::cout<<"water mass density: "<< den_mass<<std::endl;
+
+  auto gravity_plist_ = Teuchos::sublist(state_constants_plist_, "gravity");
+  double gravity = gravity_plist_->get<Teuchos::Array<double>>("value")[2];
+  //std::cout<<"gravity: "<< gravity<<std::endl;
+
+  auto perm_plist_ = Teuchos::sublist(
+		  Teuchos::sublist(field_evals_plist_, "permeability"), "function");
+  c=0;
+  for (auto& entry : *perm_plist_) {
+	std::string layer_name = entry.first;
+
+    Teuchos::RCP<Teuchos::ParameterList> layer2_plist_ = Teuchos::sublist(
+		                  Teuchos::sublist(
+		                    Teuchos::sublist(perm_plist_, layer_name),"function"),
+					    "function-constant");
+    double perm = layer2_plist_->get<double>("value");
+    //std::cout<<"permeablity checking: "<<perm <<" - "
+    //		<<hksat[c]*visco/den_mass/(-gravity) <<std::endl;
+    perm = hksat[c]*visco/den_mass/(-gravity);   // need to check unit coversion here
+    layer2_plist_->set("value", perm);
+    c++;
+  }
 
 
-  if (S_->HasMesh(mesh_name)) {
-        auto mesh_ = S_->GetMesh(mesh_name);
-        mesh_ ->build_columns();
+  // water retention curve models, in 'pks -> flow'
+  Teuchos::RCP<Teuchos::ParameterList> wrm_plist_ = Teuchos::sublist(
+		  Teuchos::sublist(ats_elm_pks_plist_, "flow"), "water retention evaluator");
 
-        int dim = 3;
-        if (mesh_name=="surface") {dim=2;}
-        Amanzi::AmanziGeometry::Point coords(dim);
+  std::string wrm_type = wrm_plist_->get<std::string>("WRM Type");
+  auto wrm_constants_plist_ = Teuchos::sublist(wrm_plist_, "WRM parameters");
+  c=0;
+  for (auto& entry : *wrm_constants_plist_) {
+    std::string layer_name = entry.first;
 
-        // number of vertices
-        int nV = mesh_ -> num_entities(Amanzi::AmanziMesh::NODE,
-                                    Amanzi::AmanziMesh::Parallel_type::OWNED);  // or, 'ALL'?
+    auto layer3_plist_ = Teuchos::sublist(wrm_constants_plist_, layer_name);
 
-        std::cout<< "checking vertice:  " << mesh_name <<" - Total Vertice no.: "<<nV<< std::endl;
-        std::cout<< "iV - n_node_abv - Coordinates (X,Y[,Z]) "<<std::endl;
-        for (int iV=0; iV<nV; iV++) {
-          // get the coords of the node
-          mesh_ -> node_get_coordinates(iV,&coords);
+    if(wrm_type == "van Genuchten"){
+       double vG_alpha = layer3_plist_->get<double>("van Genuchten alpha [Pa^-1]");
+       double vG_n = layer3_plist_->get<double>("van Genuchten n [-]");
+       double vG_sr = layer3_plist_->get<double>("residual saturation [-]");
+       double vG_s0 = layer3_plist_->get<double>("smoothing interval width [saturation]", 0.0);
 
-          // need to known Z indices for current node
-          int n_nabvid = 0;
-          int nabvid = mesh_->node_get_node_above(iV);
-          while (nabvid != -1) {
-        	  n_nabvid = n_nabvid + 1;
-        	  nabvid = mesh_->node_get_node_above(nabvid);
-          }
+       //std::cout<<"WRM -"<<layer_name<<" -vG_alpha "<<vG_alpha
+       //		   <<" -vG_n "<<vG_n<<" -Sr "<<vG_sr<< " -S0 "<<vG_s0
+       //		   <<std::endl;
+       //(TODO) reset Parameters, if available from ELM
+    } else if(wrm_type == "Clapp Hornberger"){
+       double smpsat = layer3_plist_->get<double>("Clapp Hornberger smpsat [Pa]");
+       double bsw = layer3_plist_->get<double>("Clapp Hornberger bsw [-]");
+       double sr = layer3_plist_->get<double>("residual saturation [-]", 0.0);
+       double s0 = layer3_plist_->get<double>("near-saturation inflection point interval [saturation]", 0.08);
+       //double pcx = layer3_plist_->get<double>("dry-end smoothing starting point [Pa]", 1.0e10);
 
-          // override Z coords (TODO: X, Y), if required
-          if (reset_from_elm) {
-        	  coords[dim-1] = elm_col_nodes[n_nabvid];  // NOT [length_nodes-nextid-1] ??? (further checking)
-        	  //mesh_ -> node_set_coordinates(iV, coords);
-        	  // S_->GetMesh("domain") NON-changeable?? - (TODO) needs a new thought here
-          }
+       smpsat = CH_smpsat[c];
+       bsw = CH_bsw[c];
+       sr = CH_sr[c];
 
-          std::cout<< iV <<" - "<<n_nabvid<<" - ("<< coords<<")"<< std::endl;
+       layer3_plist_->set("Clapp Hornberger smpsat [Pa]", smpsat);
+       layer3_plist_->set("Clapp Hornberger bsw [-]", bsw);
+       layer3_plist_->set("residual saturation [-]", sr);
 
-        }
-   }
-
-
+    }
+    c++;
+    //std::cout<<"WRM - "<< layer_name <<": "<< *layer3_plist_<<std::endl;
+  }
 }
 
-void ats_elm_drv::cycle_driver_read_parameter() {
-  Amanzi::Utils::Units units;
-  t0_ = ats_elm_drv_list_->get<double>("start time");
-  std::string t0_units = ats_elm_drv_list_->get<std::string>("start time units", "s");
-  if (!units.IsValidTime(t0_units)) {
-    Errors::Message msg;
-    msg << "ats_elm_drv start time: unknown time units type: \"" << t0_units << "\"  Valid are: " << units.ValidTimeStrings();
-    Exceptions::amanzi_throw(msg);
-  }
+void ats_elm_drv::plist_cycle_driver_reset(const double t0) {
   bool success;
-  t0_ = units.ConvertTime(t0_, t0_units, "s", success);
+  Amanzi::Utils::Units units;
 
-  t1_ = ats_elm_drv_list_->get<double>("end time");
-  std::string t1_units = ats_elm_drv_list_->get<std::string>("end time units", "s");
-  if (!units.IsValidTime(t1_units)) {
-    Errors::Message msg;
-    msg << "ats_elm_drv end time: unknown time units type: \"" << t1_units << "\"  Valid are: " << units.ValidTimeStrings();
-    Exceptions::amanzi_throw(msg);
-  }
-  t1_ = units.ConvertTime(t1_, t1_units, "s", success);
+  // t0_
+  ats_elm_drv_plist_->set("start time",t0,"s");
+  ats_elm_drv_plist_->set("start time units","s");
+  t0_ = ats_elm_drv_plist_->get<double>("start time");
 
-  max_dt_ = ats_elm_drv_list_->get<double>("max time step size [s]", 1.0e99);
-  min_dt_ = ats_elm_drv_list_->get<double>("min time step size [s]", 1.0e-12);
-  cycle0_ = ats_elm_drv_list_->get<int>("start cycle",0);
-  cycle1_ = ats_elm_drv_list_->get<int>("end cycle",-1);
-  duration_ = ats_elm_drv_list_->get<double>("wallclock duration [hrs]", -1.0);
-  subcycled_ts_ = ats_elm_drv_list_->get<bool>("subcycled timestep", false);
+  // t1_
+  ats_elm_drv_plist_->set("end time",t0+1800.0,"s");
+  ats_elm_drv_plist_->set("start time units","s");
+  t1_ = ats_elm_drv_plist_->get<double>("end time");
+
+  // dt_
+  ats_elm_drv_plist_->set("max time step size [s]", 1800.00);
+  max_dt_ = ats_elm_drv_plist_->get<double>("max time step size [s]", 1800.00);
+  ats_elm_drv_plist_->set("min time step size [s]", 1.00);
+  min_dt_ = ats_elm_drv_plist_->get<double>("min time step size [s]", 1.0e-12);
+  cycle0_ = ats_elm_drv_plist_->get<int>("start cycle",0);
+  cycle1_ = ats_elm_drv_plist_->get<int>("end cycle",-1);
+  duration_ = ats_elm_drv_plist_->get<double>("wallclock duration [hrs]", -1.0);
+  subcycled_ts_ = ats_elm_drv_plist_->get<bool>("subcycled timestep", false);
 
   // restart control
-  restart_ = ats_elm_drv_list_->isParameter("restart from checkpoint file");
-  if (restart_) restart_filename_ = ats_elm_drv_list_->get<std::string>("restart from checkpoint file");
+  restart_ = ats_elm_drv_plist_->isParameter("restart from checkpoint file");
+  if (restart_) restart_filename_ = ats_elm_drv_plist_->get<std::string>("restart from checkpoint file");
 }
 
+int ats_elm_drv::drv_setup(const double start_ts, const bool initialoutput) {
 
+  // -----------------------------------------------------------------------------------------
+  // (1) create meshes, regions, state from input .xml, AND over-ride them from elm if any.
+
+  Teuchos::ParameterList& plist = *parameter_list_;
+
+  // (1a) geometric model and regions
+  Teuchos::ParameterList reg_params = plist.sublist("regions");
+  Teuchos::RCP<Amanzi::AmanziGeometry::GeometricModel> gm =
+    Teuchos::rcp(new Amanzi::AmanziGeometry::GeometricModel(3, reg_params, *comm_) );
+
+  // (1b) state
+  Teuchos::ParameterList state_plist = plist.sublist("state");
+  S_ = Teuchos::rcp(new Amanzi::State(state_plist));
+
+  // (1c) create and register meshes
+  ATS::Mesh::createMeshes(plist, comm_, gm, *S_);
+
+  // reset mesh coordinates, if directly-readable 'mesh' file not available
+  //TODO: to be a mapping of vertices from ATS to ELM, currently only do some checking
+  //Amanzi::Key mesh_name = "domain";
+  //mesh_vertices_reset(mesh_name, false);
+  //mesh_name = "surface";
+  //mesh_vertices_reset(mesh_name, false);
+
+  // create the top level PKs
+  Teuchos::ParameterList pk_tree_plist = ats_elm_drv_plist_->sublist("PK tree");
+  if (pk_tree_plist.numParams() != 1) {
+    Errors::Message message("CycleDriver: PK tree list should contain exactly one root node list");
+    Exceptions::amanzi_throw(message);
+  }
+  Teuchos::ParameterList::ConstIterator pk_item = pk_tree_plist.begin();
+  const std::string &pk_name = pk_tree_plist.name(pk_item);
+
+  // (2) model setup
+
+  // create the solution
+  soln_ = Teuchos::rcp(new Amanzi::TreeVector());
+
+  // create the pk
+  Amanzi::PKFactory pk_factory;
+  pk_ = pk_factory.CreatePK(pk_name, pk_tree_plist, parameter_list_, S_, soln_);
+
+  // create the checkpointing
+  Teuchos::ParameterList& chkp_plist = parameter_list_->sublist("checkpoint");
+  checkpoint_ = Teuchos::rcp(new Amanzi::Checkpoint(chkp_plist, *S_));
+
+  // create the observations
+  Teuchos::ParameterList& observation_plist = parameter_list_->sublist("observations");
+  for (auto& sublist : observation_plist) {
+    if (observation_plist.isSublist(sublist.first)) {
+      observations_.emplace_back(Teuchos::rcp(new Amanzi::UnstructuredObservations(
+                observation_plist.sublist(sublist.first))));
+    } else {
+      Errors::Message msg("\"observations\" list must only include sublists.");
+      Exceptions::amanzi_throw(msg);
+    }
+  }
+
+  // check whether meshes are deformable, and if so require a nodal position
+  for (Amanzi::State::mesh_iterator mesh=S_->mesh_begin();
+       mesh!=S_->mesh_end(); ++mesh) {
+
+    if (S_->IsDeformableMesh(mesh->first) && !S_->IsAliasedMesh(mesh->first)) {
+      std::string node_key;
+      if (mesh->first != "domain") node_key= mesh->first+std::string("-vertex_coordinate");
+      else node_key = std::string("vertex_coordinate");
+
+      S_->RequireField(node_key)->SetMesh(mesh->second.first)->SetGhosted()
+          ->AddComponent("node", Amanzi::AmanziMesh::NODE, mesh->second.first->space_dimension());
+    }
+
+    // writes region information
+    if (parameter_list_->isSublist("analysis")) {
+      Amanzi::InputAnalysis analysis(mesh->second.first, mesh->first);
+      analysis.Init(parameter_list_->sublist("analysis").sublist(mesh->first));
+      analysis.RegionAnalysis();
+      analysis.OutputBCs();
+    }
+  }
+
+  // create the time step manager
+  tsm_ = Teuchos::rcp(new Amanzi::TimeStepManager());
+
+  // verbose object (NOTE: already set option level to NONE)
+  vo_ = Teuchos::rcp(new Amanzi::VerboseObject("ats_elm_driver", *parameter_list_));
+
+  // start at time t = t0 and initialize the state.
+  dt_restart_ = -1;
+  {
+    //Teuchos::TimeMonitor monitor(*setup_timer_);
+    StatePKsetup();
+    dt_restart_ = initialize();
+
+  }
+
+  // appears ELM's state variable not yet ready during its initializing
+  //ic_reset();
+
+  // if output initial states
+  //if (initialoutput) {
+  //  double dt = dt_restart_ > 0 ? dt_restart_ : get_dt(false);
+
+    // visualization at IC
+  //  visualize(false);
+  //  checkpoint(dt);
+  //}
+
+  // have to sync starting time with ELM
+  t0_ = start_ts;
+  ats_elm_drv_plist_->set("start time",t0_,"s");
+
+  return 0;
+}
 
 void ats_elm_drv::StatePKsetup() {
   // Set up the states, creating all data structures.
@@ -460,14 +522,14 @@ double ats_elm_drv::initialize() {
   WriteStateStatistics(*S_, *vo_);
 
   // Set up visualization
-  auto vis_list = Teuchos::sublist(parameter_list_,"visualization");
-  for (auto& entry : *vis_list) {
+  auto vis_plist = Teuchos::sublist(parameter_list_,"visualization");
+  for (auto& entry : *vis_plist) {
     std::string domain_name = entry.first;
 
     if (S_->HasMesh(domain_name)) {
       // visualize standard domain
       auto mesh_p = S_->GetMesh(domain_name);
-      auto sublist_p = Teuchos::sublist(vis_list, domain_name);
+      auto sublist_p = Teuchos::sublist(vis_plist, domain_name);
       if (!sublist_p->isParameter("file name base")) {
         if (domain_name.empty() || domain_name == "domain") {
           sublist_p->set<std::string>("file name base", std::string("ats_vis"));
@@ -490,12 +552,12 @@ double ats_elm_drv::initialize() {
     } else if (Amanzi::Keys::isDomainSet(domain_name)) {
       // visualize domain set
       const auto& dset = S_->GetDomainSet(Amanzi::Keys::getDomainSetName(domain_name));
-      auto sublist_p = Teuchos::sublist(vis_list, domain_name);
+      auto sublist_p = Teuchos::sublist(vis_plist, domain_name);
 
       if (sublist_p->get("visualize individually", false)) {
         // visualize each subdomain
         for (const auto& subdomain : *dset) {
-          Teuchos::ParameterList sublist = vis_list->sublist(subdomain);
+          Teuchos::ParameterList sublist = vis_plist->sublist(subdomain);
           sublist.set<std::string>("file name base", std::string("ats_vis_")+subdomain);
           auto vis = Teuchos::rcp(new Amanzi::Visualization(sublist));
           vis->set_name(subdomain);
@@ -540,8 +602,8 @@ double ats_elm_drv::initialize() {
   tsm_->RegisterTimeEvent(t1_);
 
   // -- register any intermediate requested times
-  if (ats_elm_drv_list_->isSublist("required times")) {
-    Teuchos::ParameterList& sublist = ats_elm_drv_list_->sublist("required times");
+  if (ats_elm_drv_plist_->isSublist("required times")) {
+    Teuchos::ParameterList& sublist = ats_elm_drv_plist_->sublist("required times");
     Amanzi::IOEvent pause_times(sublist);
     pause_times.RegisterWithTimeStepManager(tsm_.ptr());
   }
@@ -576,14 +638,19 @@ double ats_elm_drv::initialize() {
 
 void ats_elm_drv::cycle_driver(const double start_ts, const double end_ts, const bool resetIC_from_elm) {
   // wallclock duration -- in seconds
-  const double duration(duration_ * 3600);
+  const double duration(duration_);
 
   // staring/ending time (seconds) from ELM, usually one ELM-timestep
   double ts = end_ts - start_ts;
   t0_ = start_ts;
   t1_ = end_ts;
   max_dt_ = ts;
-  ats_elm_drv_list_->set("end time",t1_,"s");
+  ats_elm_drv_plist_->set("end time",t1_,"s");
+
+  // -- re-register the final time
+  S_->set_time(t0_);
+  S_->set_cycle(cycle0_);
+  tsm_->RegisterTimeEvent(t1_);
 
   //
   if (resetIC_from_elm) {
@@ -593,6 +660,14 @@ void ats_elm_drv::cycle_driver(const double start_ts, const double end_ts, const
 
   }
 
+  // some checking
+  std::cout<<std::endl<<"prior-ATS timestep ---------------------------------------"<<std::endl;
+  std::cout<<"S_: "<<std::endl;
+  get_data(S_);
+  std::cout<<"S_next_: "<<std::endl;
+  get_data(S_next_);
+
+
   // get the intial timestep
   double dt = get_dt(false);
 
@@ -601,7 +676,7 @@ void ats_elm_drv::cycle_driver(const double start_ts, const double end_ts, const
 
     bool fail = false;
 
-    std::cout << "INFO: ATS runs start at " << S_->time() << std::endl;
+    std::cout <<std::endl<< "INFO: ATS runs start at " << S_->time() << std::endl;
 
     while ((S_->time() < t1_) &&
            ((cycle1_ == -1) || (S_->cycle() <= cycle1_)) &&
@@ -615,7 +690,10 @@ void ats_elm_drv::cycle_driver(const double start_ts, const double end_ts, const
       S_->set_final_time(S_->time() + dt);
       S_->set_intermediate_time(S_->time());
 
+      std::cout << "INFO: ATS running ... " << S_->time() << " @ dt = "<< dt << std::endl;
+
       fail = advance(S_->time(), S_->time() + dt, dt);
+
 
     } // while not finished
 
@@ -623,12 +701,9 @@ void ats_elm_drv::cycle_driver(const double start_ts, const double end_ts, const
 
   }
 
-  //
-  //visualize(false);
-  //checkpoint(dt);
-  // Force checkpoint at the end of simulation, and copy to checkpoint_final
-  pk_->CalculateDiagnostics(S_next_);
-  checkpoint_->Write(*S_next_, 0.0, true);
+  // force to output for each time-step
+  visualize(true);
+  checkpoint(dt, true);
 
 }
 
@@ -754,6 +829,48 @@ void ats_elm_drv::checkpoint(double dt, bool force) {
 }
 
 // -------------------------------------------------------------------------------------------
+// the following currently only does checking mesh vertices
+void ats_elm_drv::mesh_vertices_reset(std::string mesh_name, bool reset_from_elm){
+
+  if (S_->HasMesh(mesh_name)) {
+        auto mesh_ = S_->GetMesh(mesh_name);
+        mesh_ ->build_columns();
+
+        int dim = 3;
+        if (mesh_name=="surface") {dim=2;}
+        Amanzi::AmanziGeometry::Point coords(dim);
+
+        // number of vertices
+        int nV = mesh_ -> num_entities(Amanzi::AmanziMesh::NODE,
+                                    Amanzi::AmanziMesh::Parallel_type::OWNED);  // or, 'ALL'?
+
+        std::cout<< "checking vertice:  " << mesh_name <<" - Total Vertice no.: "<<nV<< std::endl;
+        std::cout<< "iV - n_node_abv - Coordinates (X,Y[,Z]) "<<std::endl;
+        for (int iV=0; iV<nV; iV++) {
+          // get the coords of the node
+          mesh_ -> node_get_coordinates(iV,&coords);
+
+          // need to known Z indices for current node
+          int n_nabvid = 0;
+          int nabvid = mesh_->node_get_node_above(iV);
+          while (nabvid != -1) {
+        	  n_nabvid = n_nabvid + 1;
+        	  nabvid = mesh_->node_get_node_above(nabvid);
+          }
+
+          // override Z coords (TODO: X, Y), if required
+          if (reset_from_elm) {
+        	  coords[dim-1] = elm_col_nodes[n_nabvid];  // NOT [length_nodes-nextid-1] ??? (further checking)
+        	  //mesh_ -> node_set_coordinates(iV, coords);
+        	  // S_->GetMesh("domain") NON-changeable?? - (TODO) needs a new thought here
+          }
+
+          std::cout<< iV <<" - "<<n_nabvid<<" - ("<< coords<<")"<< std::endl;
+
+        }
+   }
+
+}
 
 // reset ats initial conditions (IC)
 void ats_elm_drv::ic_reset() {
@@ -764,31 +881,75 @@ void ats_elm_drv::ic_reset() {
   // (3) real IC, i.e. primary variable in PKs
   Teuchos::RCP<Teuchos::ParameterList> pk_plist_ = Teuchos::sublist(parameter_list_, "PKs");
   Teuchos::RCP<Teuchos::ParameterList> flow_plist_ = Teuchos::sublist(pk_plist_, "flow");
+  Teuchos::RCP<Teuchos::ParameterList> surfflow_plist_ = Teuchos::sublist(pk_plist_, "overland flow");
+
   std::string pk_name_ = "flow";
   std::string pv_key = flow_plist_->get<std::string>("primary variable key");
-  std::cout<<"flow pv_key: "<< pv_key <<std::endl;
-
   if (S_->HasField(pv_key)){
 	Teuchos::RCP<Amanzi::Field> field = S_->GetField(pv_key, pk_name_);
-	std::cout <<"state field: "<< field->fieldname()<<" - type: "<< field->type()<<std::endl;
-    std::cout << "data: " << *(S_->GetFieldData(pv_key)->ViewComponent("cell")) <<std::endl;
 
     auto mesh_ = S_->GetMesh("domain");
     int ncells = mesh_->num_entities(Amanzi::AmanziMesh::CELL, Amanzi::AmanziMesh::Parallel_type::OWNED);
     auto &pc = *(S_->GetFieldData(pv_key)->ViewComponent("cell"));
     for (int c = 0; c < ncells; ++c) {
-      const auto& xyzc = mesh_->cell_centroid(c);
-      std::cout <<"coords: "<<xyzc<<" - "<<pc[0][c] << " - "<< soilp[c]<<std::endl;
       pc[0][c] = soilp[c];
     }
 
-    std::cout << "data 2: " << *(S_->GetFieldData(pv_key)->ViewComponent("cell")) <<std::endl;
+    //
+    Teuchos::RCP<Amanzi::FieldEvaluator> fm = S_->GetFieldEvaluator(pv_key);
+    Teuchos::RCP<Amanzi::PrimaryVariableFieldEvaluator> solution_evaluator =
+      Teuchos::rcp_dynamic_cast<Amanzi::PrimaryVariableFieldEvaluator>(fm);
+    if (solution_evaluator != Teuchos::null){
+      solution_evaluator->SetFieldAsChanged(S_.ptr());
+      std::cout<<" Changed? "<< pv_key <<std::endl;
+    }
 
   }
 
+  //
+  std::string pk2_name_ = "overland flow";
+  std::string pv2_key = surfflow_plist_->get<std::string>("primary variable key");
+  if (S_->HasField(pv2_key)){
+	Teuchos::RCP<Amanzi::Field> field = S_->GetField(pv2_key, pk2_name_);
+
+    auto mesh2_ = S_->GetMesh("surface");
+    int ncells2 = mesh2_->num_entities(Amanzi::AmanziMesh::CELL, Amanzi::AmanziMesh::Parallel_type::OWNED);
+    auto &psurf = *(S_->GetFieldData(pv2_key)->ViewComponent("cell"));
+    for (int c = 0; c < ncells2; ++c) {
+      psurf[0][c] = surfp[c];
+    }
+
+    //
+    Teuchos::RCP<Amanzi::FieldEvaluator> fm = S_->GetFieldEvaluator(pv2_key);
+    Teuchos::RCP<Amanzi::PrimaryVariableFieldEvaluator> solution_evaluator =
+      Teuchos::rcp_dynamic_cast<Amanzi::PrimaryVariableFieldEvaluator>(fm);
+    if (solution_evaluator != Teuchos::null){
+      solution_evaluator->SetFieldAsChanged(S_.ptr());
+      std::cout<<" Changed? "<< pv2_key <<std::endl;
+    }
+
+  }
+
+  //
+  //StateField_refresh(*S_);
+
+  *S_next_ = *S_;
+  if (subcycled_ts_) {
+    *S_inter_ = *S_;
+  } else {
+    S_inter_ = S_;
+  }
+  pk_->CommitStep(S_->time(), S_->time(), S_);
+  pk_->set_states(S_, S_inter_, S_next_);
+
+  // visualization at IC (after re-setting)
+  double dt = dt_restart_ > 0 ? dt_restart_ : get_dt(false);
+  visualize(false);
+  checkpoint(dt);
+
 }
 
-// reset ats initial conditions (IC)
+// reset ats boundray conditions (BC)
 void ats_elm_drv::bc_reset() {
 
   // TODO
@@ -806,55 +967,78 @@ void ats_elm_drv::ss_reset() {
   Teuchos::RCP<Teuchos::ParameterList> flow_plist_ = Teuchos::sublist(pk_plist_, "flow");
   Teuchos::RCP<Teuchos::ParameterList> surfflow_plist_ = Teuchos::sublist(pk_plist_, "overland flow");
 
-  // overland flow SS, e.g. rain/snow-melting/rain-throughfall, -soil evap. etc.
+  // overland flow SS, e.g. rain/snow-melting/rain-throughfall etc.
   // NOTE: here all treated as potential
   std::string pk_name = "overland flow";
   if((surfflow_plist_->get<bool>("source term"))){
     std::string ss_key = surfflow_plist_->get<std::string>("source key");
-    //std::cout<<"--------------------------------------- "<<std::endl << pk_name  <<std::endl;
-    //std::cout<<"source key: "<< ss_key <<std::endl;
-    if (S_->HasField(ss_key)){
-        //std::cout << "data: " << *(S_->GetFieldData(ss_key)->ViewComponent("cell")) <<std::endl;
-
-		auto mesh_ = S_->GetMesh("surface");
+    if (S_next_->HasField(ss_key)){
+		auto mesh_ = S_next_->GetMesh("surface");
 		int ncells = mesh_->num_entities(Amanzi::AmanziMesh::CELL, Amanzi::AmanziMesh::Parallel_type::OWNED);
-		auto &ss = *(S_->GetFieldData(ss_key)->ViewComponent("cell"));
+		auto &ss = *(S_next_->GetFieldData(ss_key)->ViewComponent("cell"));
   		for (int c = 0; c < ncells; ++c) {
   		  const auto& xyc = mesh_->cell_centroid(c);
-  	      //std::cout <<"coords: "<<xyc<<" - "<<ss[0][c] << " - "<< net_surface_grossflux[c]<<std::endl;
-          ss[0][c] = net_surface_grossflux[c];
+          ss[0][c] = soil_infl[c];
   	    }
-		//std::cout << "data: " << *(S_->GetFieldData(ss_key)->ViewComponent("cell")) <<std::endl;
+
+        //
+   	    Teuchos::RCP<Amanzi::FieldEvaluator> fm = S_next_->GetFieldEvaluator(ss_key);
+   	    Teuchos::RCP<Amanzi::PrimaryVariableFieldEvaluator> solution_evaluator =
+   	      Teuchos::rcp_dynamic_cast<Amanzi::PrimaryVariableFieldEvaluator>(fm);
+   	    if (solution_evaluator != Teuchos::null){
+   	      solution_evaluator->SetFieldAsChanged(S_next_.ptr());
+   	      std::cout<<" Changed? "<< ss_key <<std::endl;
+  	    }
+   	    S_next_->GetFieldEvaluator(ss_key)->HasFieldChanged(S_next_.ptr(), ss_key);
 
 	  }
   }
 
-  //flow SS, e.g. root water extraction (i.e. transpiration)
+  //flow SS, e.g. root water extraction (i.e. transpiration) + top-soil evaporation
   pk_name = "flow";
   if((flow_plist_->get<bool>("source term"))){
     std::string ss2_key = flow_plist_->get<std::string>("source key");
-    //std::cout<<"--------------------------------------- "<<std::endl << pk_name  <<std::endl;
-    //std::cout<<"source key: "<< ss2_key <<std::endl;
 
-    if (S_->HasField(ss2_key)){
-  		auto mesh2_ = S_->GetMesh("domain");
+    if (S_next_->HasField(ss2_key)){
+  		auto mesh2_ = S_next_->GetMesh("domain");
   		int ncells = mesh2_->num_entities(Amanzi::AmanziMesh::CELL, Amanzi::AmanziMesh::Parallel_type::OWNED);
-  		auto &ss2 = *(S_->GetFieldData(ss2_key)->ViewComponent("cell"));
- 		//std::cout << "data 2: " << *(S_->GetFieldData(ss2_key)->ViewComponent("cell")) <<std::endl;
+
+  		std::string ss1_name = "soil_potential_evaporation";
+  		auto &ss1 = *(S_next_->GetFieldData(ss1_name)->ViewComponent("cell"));
+  		std::string ss2_name = "potential_transpiration";
+  		auto &ss2 = *(S_next_->GetFieldData(ss2_name)->ViewComponent("cell"));
    		for (int c = 0; c < ncells; ++c) {
   		  const auto& xyzc = mesh2_->cell_centroid(c);
-  	      //std::cout <<"coords: "<<xyzc<<" - "<<ss2[0][c] << " - "<< root_waterextract[c]<<std::endl;
   	      ss2[0][c] = root_waterextract[c];
+  	      if (c==0) {
+  	    	  ss1[0][c] = soil_evap[0];
+  	      }
   	    }
 
-  		//std::cout << "data 2: " << *(S_->GetFieldData(ss2_key)->ViewComponent("cell")) <<std::endl;
+        //
+   	    Teuchos::RCP<Amanzi::FieldEvaluator> fm = S_next_->GetFieldEvaluator(ss1_name);
+   	    Teuchos::RCP<Amanzi::PrimaryVariableFieldEvaluator> solution_evaluator =
+   	      Teuchos::rcp_dynamic_cast<Amanzi::PrimaryVariableFieldEvaluator>(fm);
+   	    if (solution_evaluator != Teuchos::null){
+   	      solution_evaluator->SetFieldAsChanged(S_next_.ptr());
+   	      std::cout<<" Changed? "<< ss1_name <<std::endl;
+   	    }
+   	    S_next_->GetFieldEvaluator(ss1_name)->HasFieldChanged(S_next_.ptr(), ss1_name);
+
     }
+
   }
+
+  //
+  *S_ = *S_next_;
+  *S_inter_ = *S_;
+  //pk_->CommitStep(S_->time(), S_->time(), S_);
+  //pk_->set_states(S_, S_inter_, S_next_);
 
 }
 
 // read data
-void ats_elm_drv::get_data() {
+void ats_elm_drv::get_data(Teuchos::RCP<Amanzi::State> SS_) {
 
   // read primary variable in PKs
   Teuchos::RCP<Teuchos::ParameterList> pk_plist_ = Teuchos::sublist(parameter_list_, "PKs");
@@ -862,25 +1046,51 @@ void ats_elm_drv::get_data() {
   std::string pk_name = "flow";
   std::string domain_name = "domain";
 
-  auto mesh_ = S_->GetMesh(domain_name);
+  auto mesh_ = SS_->GetMesh(domain_name);
   int ncells = mesh_->num_entities(Amanzi::AmanziMesh::CELL, Amanzi::AmanziMesh::Parallel_type::OWNED);
 
   std::string pv_key = flow_plist_->get<std::string>("primary variable key");
   std::cout<<"flow pv_key: "<< pv_key <<std::endl;
 
-  if (S_->HasField(pv_key)){
-	Teuchos::RCP<Amanzi::Field> field = S_->GetField(pv_key, pk_name);
+  if (SS_->HasField(pv_key)){
+	Teuchos::RCP<Amanzi::Field> field = SS_->GetField(pv_key, pk_name);
 	std::cout <<"state field: "<< field->fieldname()<<" - type: "<< field->type()<<std::endl;
-    auto &pc = *(S_->GetFieldData(pv_key)->ViewComponent("cell"));
+    auto &pv = *(SS_->GetFieldData(pv_key)->ViewComponent("cell"));
+    auto &cp = *(SS_->GetFieldData("capillary_pressure_gas_liq")->ViewComponent("cell"));
+    auto &ss = *(SS_->GetFieldData("water_source")->ViewComponent("cell"));
+    auto &sev = *(SS_->GetFieldData("soil_potential_evaporation")->ViewComponent("cell"));
+    auto &vt = *(SS_->GetFieldData("potential_transpiration")->ViewComponent("cell"));
     for (int c = 0; c < ncells; ++c) {
       const auto& xyzc = mesh_->cell_centroid(c);
-      std::cout <<"coords: "<<xyzc<<" - "<<pc[0][c] <<std::endl;
+      std::cout <<"coords: "<<xyzc<<"  pressure:  "<<pv[0][c]
+								  <<"  capillary-pressure:  "<<cp[0][c]
+								  <<"  water-source/sink:  "<<ss[0][c]
+								  <<"  soil evap:  "<<sev[0][c]
+								  <<"  transpiration:  "<<vt[0][c]
+								  <<std::endl;
     }
 
   }
 
 }
 
+// refresh State after resetting some field
+void StateField_refresh(Amanzi::State& SS){
+
+	for (Amanzi::State::field_iterator field=SS.field_begin(); field!=SS.field_end(); ++field) {
+      if (SS.HasFieldEvaluator(field->first)) {
+        Teuchos::RCP<Amanzi::FieldEvaluator> fm = SS.GetFieldEvaluator(field->first);
+        Teuchos::RCP<Amanzi::PrimaryVariableFieldEvaluator> solution_evaluator =
+          Teuchos::rcp_dynamic_cast<Amanzi::PrimaryVariableFieldEvaluator>(fm);
+        if (solution_evaluator != Teuchos::null){
+          Teuchos::Ptr<Amanzi::State> S_ptr(&SS);
+          solution_evaluator->SetFieldAsChanged(S_ptr);
+        }
+      }
+      field->second->set_initialized();
+   }
+
+}
 
 // -----------------------------------------------------------------------------
 

@@ -138,9 +138,11 @@ public:
   int comm_rank;
   std::string input_filename_;
   Teuchos::RCP<Teuchos::ParameterList> parameter_list_;
-  Teuchos::RCP<Teuchos::ParameterList> ats_elm_drv_list_;
+  Teuchos::RCP<Teuchos::ParameterList> ats_elm_drv_plist_;
+  Teuchos::RCP<Teuchos::ParameterList> ats_elm_pks_plist_;
+  Teuchos::RCP<Teuchos::ParameterList> ats_elm_state_plist_;
 
-  // data from ELM
+  // data from ELM - TODO: better to independently be contained in data struct
   double* elm_surf_gridsX;  // elm surface grids X coord in meters converted from lon, size of at least 2 (for 1 grid)
   double* elm_surf_gridsY;  // elm surface grids Y coord in meters converted from lat, size of at least 2 (for 1 grid)
   double* elm_surf_gridsZ;  // elm surface grids center elevation in meters, size of at least 1 (for 1 grid)
@@ -159,8 +161,10 @@ public:
   double* patm;             // elm atm. air pressure, unit: Pa, 1-D (surf-grids)
   double* soilp;            // elm soil column hydraulic pressure, unit: Pa, 2-D (surf-grids, soil col. layers)
   double* wtd;              // elm soil column water table depth, unit: m, 1-D (surf-grids)
+  double* surfp;            // surface pressure, if ponded, otherwise soilp[][0]
 
-  double* net_surface_grossflux;
+  double* soil_infl;
+  double* soil_evap;
   double* root_waterextract;
 
   // PK container and factory
@@ -176,6 +180,8 @@ public:
   int drv_init(std::string input_filename); //,  // input .xml file passing from ELM
 		  //const Teuchos::RCP<const Amanzi::Comm_type>& comm); // communicator passing from ELM
 
+  void plist_reset(const double start_ts);
+
   int drv_setup(const double start_ts, const bool initialoutput=false);
 
   void ic_reset();
@@ -187,15 +193,19 @@ public:
   void cycle_driver(const double start_ts, const double end_ts,
 		  const bool resetIC);
 
-  void get_data();
+  void get_data(const Teuchos::RCP<Amanzi::State> SS_);
 
   void finalize();
 
 private:
-  //
-  void mesh_parameter_reset(const bool elm_matched=false);  // elm_matched: exactly matched with elm-domain; otherwise ranges only
-  void mesh_vertices_checking(std::string mesh_name, bool reset_from_elm=false);
-  void cycle_driver_read_parameter();
+  // passing data via 'parameter list' (prior to model setup)
+  void plist_general_mesh_reset(const bool elm_matched=false);  // elm_matched: exactly matched with elm-domain; otherwise ranges only
+  void plist_material_reset();
+  void plist_cycle_driver_reset(const double start_ts);
+  void StateField_refresh(Amanzi::State& SS);
+
+  // passing data via over-ride 'State' (after model setup)
+  void mesh_vertices_reset(std::string mesh_name, bool reset_from_elm=false);
 
   // PK methods to be called
   void StatePKsetup();
@@ -215,6 +225,7 @@ private:
   double t0_, t1_;
   double max_dt_, min_dt_;
   int cycle0_, cycle1_;
+  double dt_restart_;
 
   // Epetra communicator
   Amanzi::Comm_ptr_type comm_;

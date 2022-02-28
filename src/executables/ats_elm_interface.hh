@@ -48,7 +48,7 @@ extern "C" {
 ATS::ats_elm_drv ats_elm;
 
 // input .xml file passing from ELM as c_char array
-int ats_elm_init(const char* input_filename, const int comm, const double start_time);  // input .xml file passing from ELM
+int ats_elm_init(const char* input_filename, const int comm);  // input .xml file passing from ELM
 
 void ats_elm_setmesh(const double* surf_gridsX, const double* surf_gridsY,
 		const double* surf_gridsZ, const double *col_nodes,
@@ -59,8 +59,11 @@ void ats_elm_setmat(const double* porosity, const double* hksat,
 void ats_elm_setIC(const double* patm,
 		const double* soilpressure,
 		const double* wtd);      // initial conditions
+void ats_elm_setup(const double start_time);
+
 void ats_elm_setBC();      // boundary conditions
-void ats_elm_setSS(const double* ss_soiltop, const double* ss_soilbottom,
+void ats_elm_setSS(const double* ss_soilinfl, const double* ss_soilevap,
+		const double* ss_soilbottom,
 		const double* ss_roottran, const double* ss_other);      // source-sink terms
 void ats_elm_onestep(const double start_time, const double end_time, // advance one ELM-timestep
 		const int resetIC_from_elm=0,                                // 0 or 1 pass from ELM

@@ -32,7 +32,7 @@ NOTE: this interface appears not be in a class, otherwise hard to be called by f
 #include "ats_elm_interface.hh"
 
 // input file read from ELM calling
-int ats_elm_init(const char* c_input_file, const int comm, const double start_ts) {
+int ats_elm_init(const char* c_input_file, const int comm) {
 
   ats_elm = ATS::ats_elm_drv();
 
@@ -86,15 +86,6 @@ void ats_elm_setmesh(const double* surf_gridsX, const double* surf_gridsY,
   ats_elm.elm_col_nodes = new double[len_nodes];  // elm soil column nodes in m (elevation)
   for (int i=0; i<len_nodes; i++) {ats_elm.elm_col_nodes[i] = col_nodes[i];}
 
-  // setup ats and initialize fully
-  try {
-	int iret = ats_elm.drv_setup(0.0, true);
-  }catch (int& ierr) {
-	if (ats_elm.comm_rank == 0) {
-    std::cerr << "ERROR in ats_elm driver setup and initialization with error code: " << ierr << std::endl;
-	}
-  }
-
 }
 
 //
@@ -119,6 +110,24 @@ void ats_elm_setmat(const double* porosity, const double* hksat,
 
   }
 
+  std::cout<<"INFO:: material data READY! "<<std::endl;
+
+}
+
+// setup ats and initialize fully
+void ats_elm_setup(const double start_ts){
+  try {
+
+    ats_elm.plist_reset(start_ts);
+
+    int iret = ats_elm.drv_setup(start_ts, true);
+
+  }catch (int& ierr) {
+	if (ats_elm.comm_rank == 0) {
+      std::cerr << "ERROR in ats_elm driver setup and initialization with error code: " << ierr << std::endl;
+	}
+  }
+
 }
 
 // initial conditions
@@ -127,11 +136,19 @@ void ats_elm_setIC(const double* patm,
 		const double* wtd){
   //
 
-  //ats_elm.patm = patm;
-  //ats_elm.wtd = wtd;
+  int g = (ats_elm.length_gridsX-1)*(ats_elm.length_gridsY-1); //TODO - need to check how c++ 2D-array arranged
+  ats_elm.patm = new double[g];
+  ats_elm.wtd = new double[g];
+  ats_elm.surfp = new double[g];
+  for (int i=0; i<g; i++) {
+	    ats_elm.patm[i] = patm[i];
+	    ats_elm.wtd[i] = wtd[i];
+	    ats_elm.surfp[i] = soilpressure[0]; // temporarilly set (TODO: better get surface water depth from ELM)
+  }
+
   int n = ats_elm.length_nodes-1;
   ats_elm.soilp = new double[n];
-  for (int i=0; i<ats_elm.length_nodes-1; i++) {ats_elm.soilp[i] = soilpressure[i];}
+  for (int j=0; j<ats_elm.length_nodes-1; j++) {ats_elm.soilp[j] = soilpressure[j];}
 
 }
 
@@ -141,21 +158,30 @@ void ats_elm_setBC(){
 }
 
 // source/sink terms
-void ats_elm_setSS(const double* ss_soiltop, const double* ss_soilbottom,
+void ats_elm_setSS(const double* ss_soilinfl, const double* ss_soilevap, const double* ss_soilbottom,
 		const double* ss_roottran, const double* ss_other){
 
   int c = (ats_elm.length_gridsX-1)*(ats_elm.length_gridsY-1); //TODO - need to check how c++ 2D-array arranged
-  ats_elm.net_surface_grossflux = new double[c];
+  ats_elm.soil_infl = new double[c];
+  ats_elm.soil_evap = new double[c];
   for (int i=0; i<c; i++) {
-    ats_elm.net_surface_grossflux[i] = ss_soiltop[i];
-    std::cout<<"soil top ss: "<<i<<" - "<<ss_soiltop[i]<<std::endl;
+    ats_elm.soil_infl[i] = ss_soilinfl[i];
+    ats_elm.soil_evap[i] = ss_soilevap[i];
+    if (ats_elm.soil_infl[i]>0.0) {
+    	std::cout<<"soil gross infiltration from ELM: "<<i<<" - "<<ats_elm.soil_infl[i]<<std::endl;
+    }
+    if (ats_elm.soil_evap[i]!=0.0) {
+        std::cout<<"soil potential evaporation from ELM: "<<i<<" - "<<ats_elm.soil_evap[i]<<std::endl;
+    }
   }
 
   int n = ats_elm.length_nodes-1;
-  ats_elm.root_waterextract = new double[n];
-  for (int i=0; i<n; i++) {
-	  ats_elm.root_waterextract[i] = ss_roottran[i];
-	  std::cout<<"root-transpiration ss: "<<i<<" - "<<ss_roottran[i]<<std::endl;
+  ats_elm.root_waterextract = new double[n];  //TODO - need to check how c++ 2D-array arranged
+  for (int j=0; j<n; j++) {
+	  ats_elm.root_waterextract[j] = ss_roottran[j];
+	  if (ats_elm.root_waterextract[j]>0.0) {
+	     std::cout<<"root-transpiration from ELM: "<<j<<" - "<<ats_elm.root_waterextract[j]<<std::endl;
+	  }
   }
 }
 
@@ -213,8 +239,11 @@ void ats_elm_getdata(){
 	//
 	try {
 
-	    ats_elm.get_data();
-
+	    ats_elm.get_data(ats_elm.S_);
+		if (rank == 0) {
+	      std::cout << "---------------------------------------------------------"
+	    		  "------ "<<std::endl<<std::endl;
+		}
 	} catch (std::string& s) {
 		if (rank == 0) {
 	      std::cerr << "ERROR:" << std::endl
